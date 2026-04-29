@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>rsbpm editor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #111; color: #eee; font-family: monospace; font-size: 13px; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+  #top { display: flex; gap: 8px; padding: 8px; background: #1a1a1a; border-bottom: 1px solid #333; align-items: center; flex-wrap: wrap; }
+  #top label { color: #aaa; }
+  #top input[type=number], #top input[type=text] { background: #222; color: #eee; border: 1px solid #444; padding: 3px 6px; width: 70px; }
+  #top input[type=range] { width: 80px; }
+  button { background: #333; color: #eee; border: 1px solid #555; padding: 4px 10px; cursor: pointer; }
+  button:hover { background: #444; }
+  button.active { background: #555; border-color: #888; }
+  .sep { width: 1px; background: #444; align-self: stretch; margin: 0 4px; }
+  select { background: #222; color: #eee; border: 1px solid #444; padding: 3px; }
+
+  #middle { display: flex; flex: 1; overflow: hidden; }
+  #preview-wrap { flex: 1; display: flex; align-items: center; justify-content: center; background: #000; position: relative; overflow: hidden; }
+  #preview-wrap video { max-width: 100%; max-height: 100%; display: block; }
+  #overlay-canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
+
+  #sidebar { width: 220px; background: #181818; border-left: 1px solid #333; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 12px; }
+  .section { border: 1px solid #333; padding: 8px; }
+  .section h3 { color: #aaa; margin-bottom: 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+  .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; gap: 4px; }
+  .row label { color: #ccc; white-space: nowrap; flex-shrink: 0; }
+  .row input[type=number], .row input[type=range] { flex: 1; min-width: 0; }
+  .row input[type=number] { background: #222; color: #eee; border: 1px solid #444; padding: 2px 4px; }
+  .color-swatch { width: 22px; height: 22px; border: 2px solid #555; cursor: pointer; border-radius: 3px; flex-shrink: 0; }
+  .color-picker-wrap { position: relative; }
+
+  #bottom { background: #151515; border-top: 1px solid #333; display: flex; flex-direction: column; }
+  #timeline-scroll { overflow-x: auto; overflow-y: hidden; }
+  #timeline-canvas { display: block; cursor: pointer; }
+  #playhead-row { position: relative; height: 6px; background: #111; }
+
+  .color-palette { display: flex; gap: 4px; flex-wrap: wrap; }
+  .color-option { width: 20px; height: 20px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; }
+  .color-option.selected { border-color: white; }
+
+  #render-btn { background: #2a5a2a; border-color: #4a9a4a; }
+  #render-btn:hover { background: #3a7a3a; }
+  #status { color: #888; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<div id="top">
+  <button id="load-video-btn">Load Video</button>
+  <input id="video-file" type="file" accept="video/mp4,video/*" style="display:none">
+  <button id="load-audio-btn">Load Metro Audio</button>
+  <input id="audio-file" type="file" accept="audio/*" style="display:none">
+  <div class="sep"></div>
+  <label>BPM <input id="bpm" type="number" value="120" min="1" max="300" step="0.01" style="width:70px"></label>
+  <label>Output <input id="output-path" type="text" value="output.mp4" style="width:140px"></label>
+  <div class="sep"></div>
+  <button id="play-btn">&#9654; Play</button>
+  <label>Time: <span id="time-display">0.00</span>s</label>
+  <div class="sep"></div>
+  <button id="fill-beats-btn">Fill Beats</button>
+  <button id="clear-dots-btn">Clear All</button>
+  <div class="sep"></div>
+  <button id="render-btn">&#9654; Render</button>
+  <span id="status"></span>
+</div>
+
+<div id="middle">
+  <div id="preview-wrap">
+    <video id="video" preload="auto"></video>
+    <canvas id="overlay-canvas"></canvas>
+  </div>
+
+  <div id="sidebar">
+    <div class="section">
+      <h3>Bar</h3>
+      <div class="row"><label>Y pos</label><input type="range" id="bar-y" min="0" max="1" step="0.01" value="0.9"><span id="bar-y-val">0.90</span></div>
+      <div class="row"><label>Height</label><input type="number" id="bar-height" value="60" min="10" max="300"></div>
+      <div class="row"><label>BG opacity</label><input type="range" id="bar-opacity" min="0" max="255" value="180"><span id="bar-opacity-val">180</span></div>
+    </div>
+
+    <div class="section">
+      <h3>Dots</h3>
+      <div class="row"><label>Color</label></div>
+      <div class="color-palette" id="dot-color-palette"></div>
+      <div class="row" style="margin-top:6px"><label>Radius</label><input type="number" id="dot-radius" value="14" min="2" max="60"></div>
+      <div class="row"><label>Travel (s)</label><input type="number" id="dot-travel" value="2" min="0.1" max="10" step="0.1"></div>
+    </div>
+
+    <div class="section">
+      <h3>End Circle</h3>
+      <div class="row"><label>Color</label></div>
+      <div class="color-palette" id="end-color-palette"></div>
+      <div class="row" style="margin-top:6px"><label>X pos</label><input type="range" id="end-x" min="0" max="1" step="0.01" value="0.85"><span id="end-x-val">0.85</span></div>
+      <div class="row"><label>Radius</label><input type="number" id="end-radius" value="22" min="4" max="100"></div>
+    </div>
+
+    <div class="section">
+      <h3>Direction</h3>
+      <div class="row">
+        <button id="dir-ltr" class="active">L → R</button>
+        <button id="dir-rtl">R → L</button>
+        <button id="dir-both">L ↔ R</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>Project</h3>
+      <button id="save-json-btn" style="width:100%;margin-bottom:4px">Save JSON</button>
+      <button id="load-json-btn" style="width:100%">Load JSON</button>
+      <input id="json-file" type="file" accept=".json" style="display:none">
+    </div>
+  </div>
+</div>
+
+<div id="bottom">
+  <div id="timeline-scroll">
+    <canvas id="timeline-canvas"></canvas>
+  </div>
+</div>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────────
+const state = {
+  bpm: 120,
+  dots: new Set(),        // Set of beat_32 indices
+  videoPath: null,        // server-side path after upload
+  direction: 'lefttoright',
+  barY: 0.9,
+  barHeight: 60,
+  barOpacity: 180,
+  dotColor: { r: 255, g: 182, b: 193, a: 255 },
+  dotRadius: 14,
+  dotTravel: 2.0,
+  endColor: { r: 255, g: 255, b: 255, a: 220 },
+  endX: 0.85,
+  endRadius: 22,
+  outputPath: 'output.mp4',
+};
+
+// ─── Pastel palette ───────────────────────────────────────────────────────────
+const PALETTE = [
+  { name: 'Pink',    r: 255, g: 182, b: 193, a: 255 },
+  { name: 'Red',     r: 255, g: 150, b: 150, a: 255 },
+  { name: 'Orange',  r: 255, g: 200, b: 150, a: 255 },
+  { name: 'Yellow',  r: 255, g: 240, b: 160, a: 255 },
+  { name: 'Green',   r: 180, g: 240, b: 180, a: 255 },
+  { name: 'Cyan',    r: 160, g: 230, b: 240, a: 255 },
+  { name: 'Blue',    r: 160, g: 180, b: 255, a: 255 },
+  { name: 'Purple',  r: 210, g: 170, b: 255, a: 255 },
+  { name: 'White',   r: 255, g: 255, b: 255, a: 220 },
+  { name: 'Gray',    r: 180, g: 180, b: 180, a: 200 },
+];
+
+function makePalette(containerId, stateKey) {
+  const el = document.getElementById(containerId);
+  PALETTE.forEach((c, i) => {
+    const div = document.createElement('div');
+    div.className = 'color-option';
+    div.style.background = `rgba(${c.r},${c.g},${c.b},${c.a/255})`;
+    div.title = c.name;
+    div.dataset.idx = i;
+    if (JSON.stringify(state[stateKey]) === JSON.stringify({ r: c.r, g: c.g, b: c.b, a: c.a })) div.classList.add('selected');
+    div.addEventListener('click', () => {
+      state[stateKey] = { r: c.r, g: c.g, b: c.b, a: c.a };
+      el.querySelectorAll('.color-option').forEach(d => d.classList.remove('selected'));
+      div.classList.add('selected');
+      drawOverlay();
+    });
+    el.appendChild(div);
+  });
+}
+
+makePalette('dot-color-palette', 'dotColor');
+makePalette('end-color-palette', 'endColor');
+
+// ─── Sidebar controls ─────────────────────────────────────────────────────────
+function bindRange(id, valId, stateKey, scale) {
+  const el = document.getElementById(id);
+  const label = document.getElementById(valId);
+  el.addEventListener('input', () => {
+    state[stateKey] = parseFloat(el.value);
+    if (label) label.textContent = parseFloat(el.value).toFixed(2);
+    drawOverlay();
+  });
+}
+function bindNum(id, stateKey) {
+  const el = document.getElementById(id);
+  el.addEventListener('input', () => { state[stateKey] = parseFloat(el.value); drawOverlay(); });
+}
+
+bindRange('bar-y', 'bar-y-val', 'barY');
+bindRange('bar-opacity', 'bar-opacity-val', 'barOpacity');
+bindRange('end-x', 'end-x-val', 'endX');
+bindNum('bar-height', 'barHeight');
+bindNum('dot-radius', 'dotRadius');
+bindNum('dot-travel', 'dotTravel');
+bindNum('end-radius', 'endRadius');
+
+document.getElementById('bpm').addEventListener('input', e => {
+  state.bpm = parseFloat(e.target.value) || 120;
+  buildTimeline();
+  drawOverlay();
+});
+document.getElementById('output-path').addEventListener('input', e => {
+  state.outputPath = e.target.value;
+});
+
+function setDirection(dir) {
+  state.direction = dir;
+  document.getElementById('dir-ltr').classList.toggle('active', dir === 'lefttoright');
+  document.getElementById('dir-rtl').classList.toggle('active', dir === 'righttoleft');
+  document.getElementById('dir-both').classList.toggle('active', dir === 'bothdirections');
+  drawOverlay();
+}
+document.getElementById('dir-ltr').addEventListener('click', () => setDirection('lefttoright'));
+document.getElementById('dir-rtl').addEventListener('click', () => setDirection('righttoleft'));
+document.getElementById('dir-both').addEventListener('click', () => setDirection('bothdirections'));
+
+// ─── Video & Audio loading ────────────────────────────────────────────────────
+const videoEl = document.getElementById('video');
+const overlayCanvas = document.getElementById('overlay-canvas');
+const overlayCtx = overlayCanvas.getContext('2d');
+
+async function generateThumbnails(blobUrl, duration) {
+  thumbnailBitmaps = [];
+  thumbVid.src = blobUrl;
+  await new Promise(r => thumbVid.addEventListener('loadedmetadata', r, { once: true }));
+  const offscreen = document.createElement('canvas');
+  const THUMB_W = Math.round(THUMB_INTERVAL * pxPer32 * state.bpm / 60 * 8);
+  offscreen.width = Math.max(THUMB_W, 2);
+  offscreen.height = THUMB_H;
+  const oc = offscreen.getContext('2d');
+  for (let t = 0; t < duration; t += THUMB_INTERVAL) {
+    thumbVid.currentTime = t;
+    await new Promise(r => thumbVid.addEventListener('seeked', r, { once: true }));
+    oc.drawImage(thumbVid, 0, 0, offscreen.width, THUMB_H);
+    const bitmap = await createImageBitmap(offscreen);
+    thumbnailBitmaps.push({ time: t, bitmap, interval: THUMB_INTERVAL });
+    drawTimeline();
+  }
+}
+
+async function generateWaveform(file) {
+  try {
+    const arrayBuf = await file.arrayBuffer();
+    const actx = new AudioContext();
+    const audioBuf = await actx.decodeAudioData(arrayBuf);
+    actx.close();
+    const src = audioBuf.getChannelData(0);
+    const srcRate = audioBuf.sampleRate;
+    const duration = audioBuf.duration;
+    const total = Math.ceil(duration * WAVE_SPS);
+    const srcPerDst = srcRate / WAVE_SPS;
+    const samples = new Float32Array(total);
+    for (let i = 0; i < total; i++) {
+      let max = 0;
+      const s0 = Math.floor(i * srcPerDst), s1 = Math.floor((i + 1) * srcPerDst);
+      for (let j = s0; j < s1 && j < src.length; j++) {
+        const v = Math.abs(src[j]); if (v > max) max = v;
+      }
+      samples[i] = max;
+    }
+    waveformData = { samples, sps: WAVE_SPS, duration };
+    drawTimeline();
+  } catch (err) {
+    console.warn('Waveform generation failed:', err);
+  }
+}
+
+document.getElementById('load-video-btn').addEventListener('click', () => document.getElementById('video-file').click());
+
+let _renderAfterUpload = false;
+
+document.getElementById('video-file').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const blobUrl = URL.createObjectURL(file);
+  videoEl.src = blobUrl;
+
+  setStatus('Uploading ' + file.name + '…');
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const res = await fetch('/upload/video', { method: 'POST', body: fd });
+    const data = await res.json();
+    state.videoPath = data.path;
+    setStatus('Video loaded: ' + file.name);
+    if (_renderAfterUpload) { _renderAfterUpload = false; doRender(); }
+  } catch (err) {
+    setStatus('Upload failed: ' + err);
+    _renderAfterUpload = false;
+  }
+
+  videoEl.onloadedmetadata = () => {
+    resizeOverlay();
+    buildTimeline();
+    generateThumbnails(blobUrl, videoEl.duration);
+    generateWaveform(file);
+  };
+});
+
+const audioEl = new Audio();
+document.getElementById('load-audio-btn').addEventListener('click', () => document.getElementById('audio-file').click());
+document.getElementById('audio-file').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  audioEl.src = URL.createObjectURL(file);
+  setStatus('Metro audio loaded: ' + file.name);
+});
+
+document.getElementById('play-btn').addEventListener('click', () => {
+  if (videoEl.paused) {
+    videoEl.play();
+    audioEl.currentTime = videoEl.currentTime;
+    audioEl.play();
+    document.getElementById('play-btn').textContent = '⏸ Pause';
+  } else {
+    videoEl.pause();
+    audioEl.pause();
+    document.getElementById('play-btn').textContent = '▶ Play';
+  }
+});
+
+// videoEl.currentTime quantizes to the video frame rate (~30 fps). Between
+// timeupdate events we extrapolate using the wall clock so rAF draws at full
+// display rate without stutter or doubled-position artifacts.
+let _smoothT = 0, _smoothRef = 0;
+
+function currentVideoTime() {
+  if (videoEl.paused) return videoEl.currentTime;
+  return _smoothT + (performance.now() - _smoothRef) / 1000;
+}
+
+// rAF loop for smooth animation while playing
+let rafId = null;
+let _lastSeenCurrentTime = -1;
+
+function animLoop() {
+  // Re-anchor whenever the browser advances currentTime (video frame rate),
+  // not just when timeupdate fires (~4 Hz). Prevents the extrapolation from
+  // running ahead and then snapping back when timeupdate corrects it.
+  const ct = videoEl.currentTime;
+  if (ct !== _lastSeenCurrentTime) {
+    _smoothT = ct;
+    _smoothRef = performance.now();
+    _lastSeenCurrentTime = ct;
+  }
+  document.getElementById('time-display').textContent = currentVideoTime().toFixed(2);
+  drawOverlay();
+  updatePlayhead();
+  rafId = requestAnimationFrame(animLoop);
+}
+
+videoEl.addEventListener('play', () => {
+  _smoothT = videoEl.currentTime;
+  _smoothRef = performance.now();
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(animLoop);
+});
+
+videoEl.addEventListener('pause', () => {
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  drawOverlay();
+  updatePlayhead();
+});
+
+videoEl.addEventListener('ended', () => {
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+});
+
+// Update the extrapolation anchor each time the browser advances currentTime
+videoEl.addEventListener('timeupdate', () => {
+  _smoothT = videoEl.currentTime;
+  _smoothRef = performance.now();
+  if (videoEl.paused) {
+    document.getElementById('time-display').textContent = videoEl.currentTime.toFixed(2);
+    drawOverlay();
+    updatePlayhead();
+  }
+});
+
+// ─── Overlay drawing ──────────────────────────────────────────────────────────
+function resizeOverlay() {
+  const wrap = document.getElementById('preview-wrap');
+  const vr = videoEl.getBoundingClientRect();
+  overlayCanvas.width = vr.width;
+  overlayCanvas.height = vr.height;
+  overlayCanvas.style.left = (vr.left - wrap.getBoundingClientRect().left) + 'px';
+  overlayCanvas.style.top = (vr.top - wrap.getBoundingClientRect().top) + 'px';
+}
+
+function cssColor(c, alpha) {
+  const a = alpha !== undefined ? alpha : c.a / 255;
+  return `rgba(${c.r},${c.g},${c.b},${a})`;
+}
+
+function beat32ToSecs(b32) {
+  return (b32 / 8.0) * 60.0 / state.bpm;
+}
+
+function drawOverlay() {
+  const w = overlayCanvas.width, h = overlayCanvas.height;
+  overlayCtx.clearRect(0, 0, w, h);
+  if (!w || !h) return;
+
+  const barY = state.barY * h;
+  const halfH = state.barHeight / 2;
+  const endX = state.endX * w;
+  const t = currentVideoTime();
+  const travel = state.dotTravel;
+
+  // Bar background
+  overlayCtx.fillStyle = `rgba(0,0,0,${state.barOpacity / 255})`;
+  overlayCtx.fillRect(0, barY - halfH, w, state.barHeight);
+
+  // End circle (ring) — outer edge at endRadius, inner hole smaller than dotRadius so dots overlap
+  const innerR = state.dotRadius * 0.6;
+  const ringWidth = Math.max(2, state.endRadius - innerR);
+  const ringRadius = (state.endRadius + innerR) / 2;
+  overlayCtx.beginPath();
+  overlayCtx.arc(endX, barY, ringRadius, 0, Math.PI * 2);
+  overlayCtx.strokeStyle = cssColor(state.endColor);
+  overlayCtx.lineWidth = ringWidth;
+  overlayCtx.stroke();
+
+  // Dots
+  overlayCtx.fillStyle = cssColor(state.dotColor);
+  for (const b32 of state.dots) {
+    const hitTime = beat32ToSecs(b32);
+    const startTime = hitTime - travel;
+    if (t < startTime || t > hitTime + 0.15) continue;
+    const progress = Math.min(1, (t - startTime) / travel);
+    const dotXs = [];
+    if (state.direction === 'lefttoright' || state.direction === 'bothdirections')
+      dotXs.push(endX * progress);
+    if (state.direction === 'righttoleft' || state.direction === 'bothdirections')
+      dotXs.push(w + (endX - w) * progress);
+    for (const dotX of dotXs) {
+      overlayCtx.beginPath();
+      overlayCtx.arc(dotX, barY, state.dotRadius, 0, Math.PI * 2);
+      overlayCtx.fill();
+    }
+  }
+}
+
+window.addEventListener('resize', () => { resizeOverlay(); drawOverlay(); });
+
+// ─── Timeline ─────────────────────────────────────────────────────────────────
+const tlCanvas = document.getElementById('timeline-canvas');
+const tlCtx = tlCanvas.getContext('2d');
+let pxPer32 = 14;          // pixels per 32nd-note slot — changes with zoom
+let totalBeat32 = 0;
+
+// Timeline layout rows
+const THUMB_H = 56, WAVE_H = 40, DOT_H = 64;
+const TL_H = THUMB_H + WAVE_H + DOT_H;
+
+let thumbnailBitmaps = [];  // [{time, bitmap, interval}]
+let waveformData = null;    // {samples: Float32Array, sps, duration}
+const WAVE_SPS = 512;       // waveform samples per second stored
+const THUMB_INTERVAL = 2;   // seconds between video thumbnails
+
+// Hidden video element used only for thumbnail extraction
+const thumbVid = document.createElement('video');
+thumbVid.muted = true;
+thumbVid.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none';
+document.body.appendChild(thumbVid);
+
+function buildTimeline() {
+  const dur = videoEl.duration || 60;
+  const beatsPerSec = state.bpm / 60.0;
+  totalBeat32 = Math.ceil(dur * beatsPerSec * 8) + 8;
+  // Never shrink below what's needed to show all placed dots
+  for (const b of state.dots) if (b + 8 > totalBeat32) totalBeat32 = b + 8;
+  tlCanvas.width = totalBeat32 * pxPer32;
+  tlCanvas.height = TL_H;
+  drawTimeline();
+}
+
+function drawTimeline() {
+  const w = tlCanvas.width;
+  const pxPerSec = pxPer32 * state.bpm / 60 * 8;
+  tlCtx.clearRect(0, 0, w, TL_H);
+
+  // ── Video thumbnail strip ────────────────────────────────────────────────
+  tlCtx.fillStyle = '#0d0d0d';
+  tlCtx.fillRect(0, 0, w, THUMB_H);
+  for (const {time, bitmap, interval} of thumbnailBitmaps) {
+    const x = time * pxPerSec;
+    const tw = interval * pxPerSec;
+    if (x > w || x + tw < 0) continue;
+    tlCtx.drawImage(bitmap, x, 0, tw, THUMB_H);
+  }
+
+  // ── Waveform strip ───────────────────────────────────────────────────────
+  tlCtx.fillStyle = '#111';
+  tlCtx.fillRect(0, THUMB_H, w, WAVE_H);
+  if (waveformData) {
+    const midY = THUMB_H + WAVE_H / 2;
+    const half = WAVE_H / 2 - 3;
+    tlCtx.strokeStyle = '#3d8c4f';
+    tlCtx.lineWidth = 1;
+    tlCtx.beginPath();
+    for (let px = 0; px < w; px++) {
+      const si = Math.floor(px / pxPerSec * WAVE_SPS);
+      const amp = (waveformData.samples[si] || 0) * half;
+      tlCtx.moveTo(px + 0.5, midY - amp);
+      tlCtx.lineTo(px + 0.5, midY + amp);
+    }
+    tlCtx.stroke();
+  }
+
+  // ── Section dividers ─────────────────────────────────────────────────────
+  tlCtx.strokeStyle = '#2a2a2a';
+  tlCtx.lineWidth = 1;
+  for (const y of [THUMB_H, THUMB_H + WAVE_H]) {
+    tlCtx.beginPath(); tlCtx.moveTo(0, y); tlCtx.lineTo(w, y); tlCtx.stroke();
+  }
+
+  // ── Dot track ────────────────────────────────────────────────────────────
+  const dotY = THUMB_H + WAVE_H;
+  tlCtx.fillStyle = '#1a1a1a';
+  tlCtx.fillRect(0, dotY, w, DOT_H);
+
+  for (let i = 0; i < totalBeat32; i++) {
+    const x = i * pxPer32;
+    if (x > w) break;
+    if      (i % 32 === 0) { tlCtx.strokeStyle = '#666';   tlCtx.lineWidth = 1.5; }
+    else if (i %  8 === 0) { tlCtx.strokeStyle = '#444';   tlCtx.lineWidth = 1;   }
+    else if (i %  4 === 0) { tlCtx.strokeStyle = '#303030'; tlCtx.lineWidth = 0.5; }
+    else                   { tlCtx.strokeStyle = '#232323'; tlCtx.lineWidth = 0.5; }
+    tlCtx.beginPath();
+    tlCtx.moveTo(x, dotY);
+    tlCtx.lineTo(x, TL_H);
+    tlCtx.stroke();
+  }
+
+  tlCtx.fillStyle = cssColor(state.dotColor);
+  for (const b32 of state.dots) {
+    const x = b32 * pxPer32 + pxPer32 / 2;
+    if (x < 0 || x > w) continue;
+    tlCtx.beginPath();
+    tlCtx.arc(x, dotY + DOT_H / 2, 5, 0, Math.PI * 2);
+    tlCtx.fill();
+  }
+
+  // ── Playhead ─────────────────────────────────────────────────────────────
+  if (videoEl.duration) {
+    const px = currentVideoTime() * pxPerSec;
+    tlCtx.strokeStyle = '#ff4444';
+    tlCtx.lineWidth = 2;
+    tlCtx.beginPath();
+    tlCtx.moveTo(px, 0);
+    tlCtx.lineTo(px, TL_H);
+    tlCtx.stroke();
+  }
+}
+
+function updatePlayhead() {
+  drawTimeline();
+  const scroll = document.getElementById('timeline-scroll');
+  const pxPerSec = pxPer32 * state.bpm / 60 * 8;
+  const px = currentVideoTime() * pxPerSec;
+  if (px < scroll.scrollLeft || px > scroll.scrollLeft + scroll.clientWidth - 60) {
+    scroll.scrollLeft = px - scroll.clientWidth / 2;
+  }
+}
+
+// Timeline click/drag to add or remove dots
+let tlDragging = false;
+let tlAddMode = true;
+
+function tlSeek(offsetX) {
+  const pxPerSec = pxPer32 * state.bpm / 60 * 8;
+  videoEl.currentTime = offsetX / pxPerSec;
+}
+
+tlCanvas.addEventListener('mousedown', e => {
+  if (e.offsetY < THUMB_H + WAVE_H) { tlSeek(e.offsetX); return; }
+  tlDragging = true;
+  const b32 = Math.floor(e.offsetX / pxPer32);
+  tlAddMode = !state.dots.has(b32);
+  toggleDot(b32, tlAddMode);
+});
+tlCanvas.addEventListener('mousemove', e => {
+  if (!tlDragging) return;
+  const b32 = Math.floor(e.offsetX / pxPer32);
+  toggleDot(b32, tlAddMode);
+});
+window.addEventListener('mouseup', () => { tlDragging = false; });
+
+// Right-click anywhere on timeline → seek
+tlCanvas.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  tlSeek(e.offsetX);
+});
+
+// Scroll wheel → zoom, anchored to cursor position
+document.getElementById('timeline-scroll').addEventListener('wheel', e => {
+  e.preventDefault();
+  const scrollEl = document.getElementById('timeline-scroll');
+  const rect = scrollEl.getBoundingClientRect();
+  const cursorCanvasX = (e.clientX - rect.left) + scrollEl.scrollLeft;
+  const pxPerSec = pxPer32 * state.bpm / 60 * 8;
+  const timeAtCursor = cursorCanvasX / pxPerSec;
+
+  const factor = e.deltaY < 0 ? 1.25 : 0.8;
+  pxPer32 = Math.max(3, Math.min(120, pxPer32 * factor));
+
+  buildTimeline();
+
+  const newPxPerSec = pxPer32 * state.bpm / 60 * 8;
+  scrollEl.scrollLeft = timeAtCursor * newPxPerSec - (e.clientX - rect.left);
+}, { passive: false });
+
+function toggleDot(b32, add) {
+  if (b32 < 0 || b32 >= totalBeat32) return;
+  if (add) state.dots.add(b32);
+  else state.dots.delete(b32);
+  drawTimeline();
+  drawOverlay();
+}
+
+// ─── Fill beats button ────────────────────────────────────────────────────────
+document.getElementById('fill-beats-btn').addEventListener('click', () => {
+  for (let i = 0; i < totalBeat32; i += 8) state.dots.add(i);
+  drawTimeline();
+  drawOverlay();
+});
+
+document.getElementById('clear-dots-btn').addEventListener('click', () => {
+  state.dots.clear();
+  drawTimeline();
+  drawOverlay();
+});
+
+// ─── JSON save/load ───────────────────────────────────────────────────────────
+document.getElementById('save-json-btn').addEventListener('click', () => {
+  const project = buildProject();
+  const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'project.json';
+  a.click();
+});
+
+document.getElementById('load-json-btn').addEventListener('click', () => document.getElementById('json-file').click());
+document.getElementById('json-file').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      const p = JSON.parse(ev.target.result);
+      applyProject(p);
+      setStatus('Project loaded.');
+    } catch (err) {
+      setStatus('Error loading JSON: ' + err);
+    }
+  };
+  reader.readAsText(file);
+});
+
+function buildProject() {
+  return {
+    bpm: state.bpm,
+    video_path: state.videoPath,
+    bar: {
+      bar_y: state.barY,
+      bar_height: state.barHeight,
+      bar_opacity: state.barOpacity,
+      dot_color: state.dotColor,
+      end_circle_color: state.endColor,
+      end_circle_x: state.endX,
+      direction: state.direction,
+      dot_radius: state.dotRadius,
+      end_circle_radius: state.endRadius,
+      dot_travel_seconds: state.dotTravel,
+    },
+    dots: [...state.dots].sort((a, b) => a - b).map(b => ({ beat_32: b })),
+    output: state.outputPath,
+  };
+}
+
+function applyProject(p) {
+  if (p.video_path) state.videoPath = p.video_path;
+  state.bpm = p.bpm ?? 120;
+  document.getElementById('bpm').value = state.bpm;
+  if (p.bar) {
+    state.barY = p.bar.bar_y ?? 0.9;
+    state.barHeight = p.bar.bar_height ?? 60;
+    state.barOpacity = p.bar.bar_opacity ?? 180;
+    state.dotColor = p.bar.dot_color ?? state.dotColor;
+    state.endColor = p.bar.end_circle_color ?? state.endColor;
+    state.endX = p.bar.end_circle_x ?? 0.85;
+    state.direction = p.bar.direction ?? 'lefttoright';
+    setDirection(state.direction);
+    state.dotRadius = p.bar.dot_radius ?? 14;
+    state.endRadius = p.bar.end_circle_radius ?? 22;
+    state.dotTravel = p.bar.dot_travel_seconds ?? 2;
+    // sync sliders
+    document.getElementById('bar-y').value = state.barY;
+    document.getElementById('bar-y-val').textContent = state.barY.toFixed(2);
+    document.getElementById('bar-height').value = state.barHeight;
+    document.getElementById('bar-opacity').value = state.barOpacity;
+    document.getElementById('bar-opacity-val').textContent = state.barOpacity;
+    document.getElementById('end-x').value = state.endX;
+    document.getElementById('end-x-val').textContent = state.endX.toFixed(2);
+    document.getElementById('end-radius').value = state.endRadius;
+    document.getElementById('dot-radius').value = state.dotRadius;
+    document.getElementById('dot-travel').value = state.dotTravel;
+  }
+  state.dots.clear();
+  (p.dots ?? []).forEach(d => state.dots.add(d.beat_32));
+  if (p.output) {
+    state.outputPath = p.output;
+    document.getElementById('output-path').value = p.output;
+  }
+  buildTimeline();
+  drawOverlay();
+}
+
+// ─── Render ───────────────────────────────────────────────────────────────────
+async function doRender() {
+  setStatus('Rendering…');
+  const project = buildProject();
+  const res = await fetch('/render', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ video_path: state.videoPath, project }),
+  });
+  if (res.ok) {
+    setStatus('Render complete: ' + state.outputPath);
+  } else {
+    const txt = await res.text();
+    setStatus('Render failed: ' + txt);
+  }
+}
+
+document.getElementById('render-btn').addEventListener('click', () => {
+  if (!state.videoPath) {
+    _renderAfterUpload = true;
+    setStatus('Select your video file to begin rendering…');
+    document.getElementById('video-file').click();
+    return;
+  }
+  doRender();
+});
+
+function setStatus(s) { document.getElementById('status').textContent = s; }
+
+buildTimeline();
+</script>
+</body>
+</html>
