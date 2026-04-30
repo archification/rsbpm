@@ -46,16 +46,16 @@ pub struct BarConfig {
 impl Default for BarConfig {
     fn default() -> Self {
         Self {
-            bar_y: 0.9,
+            bar_y: 0.98,
             bar_height: 60.0,
-            bar_opacity: 180,
+            bar_opacity: 35,
             dot_color: Color { r: 255, g: 182, b: 193, a: 255 }, // pastel pink
             end_circle_color: Color { r: 255, g: 255, b: 255, a: 220 },
-            end_circle_x: 0.85,
-            direction: Direction::LeftToRight,
+            end_circle_x: 0.5,
+            direction: Direction::BothDirections,
             dot_radius: 14.0,
             end_circle_radius: 22.0,
-            dot_travel_seconds: 2.0,
+            dot_travel_seconds: 3.0,
         }
     }
 }

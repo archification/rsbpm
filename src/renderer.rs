@@ -5,6 +5,11 @@ use tiny_skia::*;
 
 use crate::project::{Direction, Project};
 
+pub struct RenderConfig {
+    pub nvidia: bool,
+    pub cq: u8,
+}
+
 pub struct RenderJob {
     pub input_video: String,
     pub project: Project,
@@ -12,6 +17,7 @@ pub struct RenderJob {
     pub video_height: u32,
     pub fps: f64,
     pub total_frames: u64,
+    pub render_cfg: RenderConfig,
 }
 
 impl RenderJob {
@@ -29,6 +35,7 @@ impl RenderJob {
             self.video_width,
             self.video_height,
             self.fps,
+            &self.render_cfg,
         )?;
 
         let stdin = ffmpeg.stdin.as_mut().context("no ffmpeg stdin")?;
@@ -140,7 +147,15 @@ fn spawn_ffmpeg_overlay(
     w: u32,
     h: u32,
     fps: f64,
+    cfg: &RenderConfig,
 ) -> Result<Child> {
+    let cq = cfg.cq.to_string();
+    let (codec, preset, quality_flag) = if cfg.nvidia {
+        ("h264_nvenc", "p4", "-cq")
+    } else {
+        ("libx264", "medium", "-crf")
+    };
+
     let child = Command::new("ffmpeg")
         .args([
             "-y",
@@ -153,9 +168,9 @@ fn spawn_ffmpeg_overlay(
             "-filter_complex", "[0:v][1:v]overlay=0:0[out]",
             "-map", "[out]",
             "-map", "0:a?",
-            "-c:v", "h264_nvenc",
-            "-preset", "p4",
-            "-cq", "18",
+            "-c:v", codec,
+            "-preset", preset,
+            quality_flag, &cq,
             "-c:a", "copy",
             output,
         ])

@@ -77,9 +77,9 @@
   <div id="sidebar">
     <div class="section">
       <h3>Bar</h3>
-      <div class="row"><label>Y pos</label><input type="range" id="bar-y" min="0" max="1" step="0.01" value="0.9"><span id="bar-y-val">0.90</span></div>
+      <div class="row"><label>Y pos</label><input type="range" id="bar-y" min="0" max="1" step="0.01" value="0.98"><span id="bar-y-val">0.98</span></div>
       <div class="row"><label>Height</label><input type="number" id="bar-height" value="60" min="10" max="300"></div>
-      <div class="row"><label>BG opacity</label><input type="range" id="bar-opacity" min="0" max="255" value="180"><span id="bar-opacity-val">180</span></div>
+      <div class="row"><label>BG opacity</label><input type="range" id="bar-opacity" min="0" max="255" value="35"><span id="bar-opacity-val">35</span></div>
     </div>
 
     <div class="section">
@@ -87,23 +87,23 @@
       <div class="row"><label>Color</label></div>
       <div class="color-palette" id="dot-color-palette"></div>
       <div class="row" style="margin-top:6px"><label>Radius</label><input type="number" id="dot-radius" value="14" min="2" max="60"></div>
-      <div class="row"><label>Travel (s)</label><input type="number" id="dot-travel" value="2" min="0.1" max="10" step="0.1"></div>
+      <div class="row"><label>Travel (s)</label><input type="number" id="dot-travel" value="3" min="0.1" max="10" step="0.1"></div>
     </div>
 
     <div class="section">
       <h3>End Circle</h3>
       <div class="row"><label>Color</label></div>
       <div class="color-palette" id="end-color-palette"></div>
-      <div class="row" style="margin-top:6px"><label>X pos</label><input type="range" id="end-x" min="0" max="1" step="0.01" value="0.85"><span id="end-x-val">0.85</span></div>
+      <div class="row" style="margin-top:6px"><label>X pos</label><input type="range" id="end-x" min="0" max="1" step="0.01" value="0.50"><span id="end-x-val">0.50</span></div>
       <div class="row"><label>Radius</label><input type="number" id="end-radius" value="22" min="4" max="100"></div>
     </div>
 
     <div class="section">
       <h3>Direction</h3>
       <div class="row">
-        <button id="dir-ltr" class="active">L → R</button>
+        <button id="dir-ltr">L → R</button>
         <button id="dir-rtl">R → L</button>
-        <button id="dir-both">L ↔ R</button>
+        <button id="dir-both" class="active">L ↔ R</button>
       </div>
     </div>
 
@@ -138,15 +138,15 @@ const state = {
   bpm: 120,
   dots: new Set(),        // Set of beat_32 indices
   videoPath: null,        // server-side path after upload
-  direction: 'lefttoright',
-  barY: 0.9,
+  direction: 'bothdirections',
+  barY: 0.98,
   barHeight: 60,
-  barOpacity: 180,
+  barOpacity: 35,
   dotColor: { r: 255, g: 182, b: 193, a: 255 },
   dotRadius: 14,
-  dotTravel: 2.0,
+  dotTravel: 3.0,
   endColor: { r: 255, g: 255, b: 255, a: 220 },
-  endX: 0.85,
+  endX: 0.50,
   endRadius: 22,
   outputPath: 'output.mp4',
   beatChanges: [],        // [{beat_32, type}] sorted by beat_32
@@ -846,17 +846,17 @@ function applyProject(p) {
   state.bpm = p.bpm ?? 120;
   document.getElementById('bpm').value = state.bpm;
   if (p.bar) {
-    state.barY = p.bar.bar_y ?? 0.9;
+    state.barY = p.bar.bar_y ?? 0.98;
     state.barHeight = p.bar.bar_height ?? 60;
-    state.barOpacity = p.bar.bar_opacity ?? 180;
+    state.barOpacity = p.bar.bar_opacity ?? 35;
     state.dotColor = p.bar.dot_color ?? state.dotColor;
     state.endColor = p.bar.end_circle_color ?? state.endColor;
-    state.endX = p.bar.end_circle_x ?? 0.85;
-    state.direction = p.bar.direction ?? 'lefttoright';
+    state.endX = p.bar.end_circle_x ?? 0.5;
+    state.direction = p.bar.direction ?? 'bothdirections';
     setDirection(state.direction);
     state.dotRadius = p.bar.dot_radius ?? 14;
     state.endRadius = p.bar.end_circle_radius ?? 22;
-    state.dotTravel = p.bar.dot_travel_seconds ?? 2;
+    state.dotTravel = p.bar.dot_travel_seconds ?? 3;
     // sync sliders
     document.getElementById('bar-y').value = state.barY;
     document.getElementById('bar-y-val').textContent = state.barY.toFixed(2);

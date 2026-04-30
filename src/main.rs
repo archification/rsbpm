@@ -1,13 +1,14 @@
+mod config;
 mod project;
 mod renderer;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use axum::{
-    Json,
-    Router,
-    extract::{DefaultBodyLimit, Multipart},
+    Json, Router,
+    extract::{DefaultBodyLimit, Multipart, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -17,19 +18,29 @@ use tower_http::cors::CorsLayer;
 
 static EDITOR_HTML: &str = include_str!("editor.html");
 
+#[derive(Clone)]
+struct AppState {
+    cfg: Arc<config::Config>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let upload_dir = PathBuf::from("uploads");
+    let cfg = Arc::new(config::load()?);
+
+    let upload_dir = PathBuf::from(&cfg.server.uploads_dir);
     std::fs::create_dir_all(&upload_dir)?;
+
+    let state = AppState { cfg: cfg.clone() };
 
     let app = Router::new()
         .route("/", get(serve_editor))
         .route("/upload/video", post(upload_video))
         .route("/render", post(render))
         .layer(DefaultBodyLimit::disable())
-        .layer(CorsLayer::permissive());
+        .layer(CorsLayer::permissive())
+        .with_state(state);
 
-    let addr = "127.0.0.1:7979";
+    let addr = &cfg.server.bind;
     println!("rsbpm editor → http://{addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
@@ -49,17 +60,17 @@ struct UploadResponse {
     path: String,
 }
 
-async fn upload_video(mut multipart: Multipart) -> Result<Json<UploadResponse>, AppError> {
+async fn upload_video(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<UploadResponse>, AppError> {
     while let Some(field) = multipart.next_field().await? {
         if field.name() != Some("file") {
             continue;
         }
-        let filename = field
-            .file_name()
-            .unwrap_or("video.mp4")
-            .to_string();
+        let filename = field.file_name().unwrap_or("video.mp4").to_string();
         let safe_name = sanitize_filename(&filename);
-        let dest = format!("uploads/{safe_name}");
+        let dest = format!("{}/{safe_name}", state.cfg.server.uploads_dir);
         let bytes = field.bytes().await?;
         std::fs::write(&dest, &bytes)?;
         return Ok(Json(UploadResponse { path: dest }));
@@ -73,9 +84,16 @@ struct RenderRequest {
     project: project::Project,
 }
 
-async fn render(Json(req): Json<RenderRequest>) -> Result<StatusCode, AppError> {
+async fn render(
+    State(state): State<AppState>,
+    Json(req): Json<RenderRequest>,
+) -> Result<StatusCode, AppError> {
     let video_path = req.video_path.clone();
     let project = req.project;
+    let render_cfg = renderer::RenderConfig {
+        nvidia: state.cfg.render.nvidia,
+        cq: state.cfg.render.cq,
+    };
 
     tokio::task::spawn_blocking(move || -> Result<()> {
         let (w, h, fps, frames) = renderer::probe_video(&video_path)?;
@@ -86,6 +104,7 @@ async fn render(Json(req): Json<RenderRequest>) -> Result<StatusCode, AppError> 
             video_height: h,
             fps,
             total_frames: frames,
+            render_cfg,
         };
         job.render()
     })

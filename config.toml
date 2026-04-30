@@ -1,0 +1,12 @@
+[server]
+# Address and port the editor web UI is served on
+bind = "127.0.0.1:7979"
+# Directory where uploaded source videos are stored
+uploads_dir = "uploads"
+
+[render]
+# Use NVIDIA hardware encoding (h264_nvenc). Set to false to use software libx264.
+nvidia = true
+# Encode quality: lower = better quality, larger file. 18 is a good default.
+# Maps to -cq for nvenc, -crf for libx264.
+cq = 18
