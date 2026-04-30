@@ -58,6 +58,7 @@
   <label>Output <input id="output-path" type="text" value="output.mp4" style="width:140px"></label>
   <div class="sep"></div>
   <button id="play-btn">&#9654; Play</button>
+  <label>Vol <input id="volume" type="range" min="0" max="1" step="0.01" value="1" style="width:70px"></label>
   <label>Time: <span id="time-display">0.00</span>s</label>
   <div class="sep"></div>
   <button id="fill-beats-btn">Fill Beats</button>
@@ -107,6 +108,16 @@
     </div>
 
     <div class="section">
+      <h3>Beat Changes</h3>
+      <div style="font-size:10px;color:#777;margin-bottom:6px">Select · click dot track to place · right-click to remove</div>
+      <div id="beat-change-palette" style="display:grid;grid-template-columns:1fr 1fr;gap:4px"></div>
+      <div id="bc-normal-bpm-row" class="row" style="display:none;margin-top:6px">
+        <label>New BPM</label>
+        <input type="number" id="bc-normal-bpm" value="120" min="1" max="999" step="0.01" style="width:70px">
+      </div>
+    </div>
+
+    <div class="section">
       <h3>Project</h3>
       <button id="save-json-btn" style="width:100%;margin-bottom:4px">Save JSON</button>
       <button id="load-json-btn" style="width:100%">Load JSON</button>
@@ -138,6 +149,7 @@ const state = {
   endX: 0.85,
   endRadius: 22,
   outputPath: 'output.mp4',
+  beatChanges: [],        // [{beat_32, type}] sorted by beat_32
 };
 
 // ─── Pastel palette ───────────────────────────────────────────────────────────
@@ -176,6 +188,53 @@ function makePalette(containerId, stateKey) {
 makePalette('dot-color-palette', 'dotColor');
 makePalette('end-color-palette', 'endColor');
 
+// ─── Beat change palette ──────────────────────────────────────────────────────
+const BEAT_CHANGE_TYPES = [
+  { type: 'none',   symbol: '∅', label: 'No Beats',     color: '#cc4444' },
+  { type: 'half',   symbol: '½', label: 'Half Beats',   color: '#ccaa44' },
+  { type: 'normal', symbol: '♩', label: 'Normal Beats', color: '#44aa77' },
+  { type: 'double', symbol: '♫', label: 'Double Beats', color: '#4488cc' },
+];
+const BC_COLORS = Object.fromEntries(BEAT_CHANGE_TYPES.map(t => [t.type, t.color]));
+const BC_SYMBOLS = Object.fromEntries(BEAT_CHANGE_TYPES.map(t => [t.type, t.symbol]));
+
+let selectedBeatChangeType = null;
+
+(function buildBeatChangePalette() {
+  const el = document.getElementById('beat-change-palette');
+  for (const { type, symbol, label, color } of BEAT_CHANGE_TYPES) {
+    const btn = document.createElement('button');
+    btn.id = 'bc-btn-' + type;
+    btn.draggable = true;
+    btn.style.cssText = `color:${color};border-color:${color}88;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 4px`;
+    btn.innerHTML = `<span style="font-size:16px;line-height:1">${symbol}</span><span style="font-size:9px">${label}</span>`;
+    btn.addEventListener('dragstart', e => e.dataTransfer.setData('beat-change-type', type));
+    btn.addEventListener('click', () => {
+      selectedBeatChangeType = selectedBeatChangeType === type ? null : type;
+      for (const t of BEAT_CHANGE_TYPES)
+        document.getElementById('bc-btn-' + t.type).classList.toggle('active', selectedBeatChangeType === t.type);
+      document.getElementById('bc-normal-bpm-row').style.display =
+        selectedBeatChangeType === 'normal' ? '' : 'none';
+    });
+    el.appendChild(btn);
+  }
+})();
+
+// ─── Keyboard shortcuts ───────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') {
+    e.preventDefault();
+    document.getElementById('play-btn').click();
+  } else if (e.code === 'ArrowLeft') {
+    e.preventDefault();
+    videoEl.currentTime = Math.max(0, videoEl.currentTime - (e.shiftKey ? 10 : 2));
+  } else if (e.code === 'ArrowRight') {
+    e.preventDefault();
+    videoEl.currentTime = Math.min(videoEl.duration || 0, videoEl.currentTime + (e.shiftKey ? 10 : 2));
+  }
+});
+
 // ─── Sidebar controls ─────────────────────────────────────────────────────────
 function bindRange(id, valId, stateKey, scale) {
   const el = document.getElementById(id);
@@ -206,6 +265,9 @@ document.getElementById('bpm').addEventListener('input', e => {
 });
 document.getElementById('output-path').addEventListener('input', e => {
   state.outputPath = e.target.value;
+});
+document.getElementById('volume').addEventListener('input', e => {
+  videoEl.volume = parseFloat(e.target.value);
 });
 
 function setDirection(dir) {
@@ -398,7 +460,21 @@ function cssColor(c, alpha) {
 }
 
 function beat32ToSecs(b32) {
-  return (b32 / 8.0) * 60.0 / state.bpm;
+  // Build sorted tempo anchor list from normal beat changes that carry a bpm.
+  const tempo = [{ beat_32: 0, bpm: state.bpm }];
+  for (const bc of [...state.beatChanges].sort((a, b) => a.beat_32 - b.beat_32)) {
+    if (bc.type === 'normal' && bc.bpm != null) {
+      if (bc.beat_32 === 0) { tempo[0].bpm = bc.bpm; }
+      else { tempo.push({ beat_32: bc.beat_32, bpm: bc.bpm }); }
+    }
+  }
+  let secs = 0, i = 0;
+  while (i + 1 < tempo.length && tempo[i + 1].beat_32 < b32) {
+    secs += (tempo[i + 1].beat_32 - tempo[i].beat_32) / 8.0 * 60.0 / tempo[i].bpm;
+    i++;
+  }
+  secs += (b32 - tempo[i].beat_32) / 8.0 * 60.0 / tempo[i].bpm;
+  return secs;
 }
 
 function drawOverlay() {
@@ -547,6 +623,26 @@ function drawTimeline() {
     tlCtx.fill();
   }
 
+  // ── Beat change markers ───────────────────────────────────────────────────
+  for (const bc of state.beatChanges) {
+    const x = bc.beat_32 * pxPer32;
+    const color = BC_COLORS[bc.type];
+    tlCtx.strokeStyle = color;
+    tlCtx.lineWidth = 2;
+    tlCtx.beginPath();
+    tlCtx.moveTo(x, dotY);
+    tlCtx.lineTo(x, TL_H);
+    tlCtx.stroke();
+    tlCtx.fillStyle = color;
+    if (bc.type === 'normal' && bc.bpm != null) {
+      tlCtx.font = 'bold 10px monospace';
+      tlCtx.fillText(`♩${Math.round(bc.bpm)}`, x + 3, dotY + 13);
+    } else {
+      tlCtx.font = 'bold 11px monospace';
+      tlCtx.fillText(BC_SYMBOLS[bc.type], x + 3, dotY + 13);
+    }
+  }
+
   // ── Playhead ─────────────────────────────────────────────────────────────
   if (videoEl.duration) {
     const px = currentVideoTime() * pxPerSec;
@@ -578,10 +674,28 @@ function tlSeek(offsetX) {
   videoEl.currentTime = offsetX / pxPerSec;
 }
 
+function placeBeatChange(b32, type, bpm) {
+  const idx = state.beatChanges.findIndex(bc => bc.beat_32 === b32);
+  if (idx >= 0) state.beatChanges.splice(idx, 1);
+  const entry = { beat_32: b32, type };
+  if (type === 'normal' && bpm != null) entry.bpm = bpm;
+  state.beatChanges.push(entry);
+  state.beatChanges.sort((a, b) => a.beat_32 - b.beat_32);
+  drawTimeline();
+  drawOverlay();
+}
+
 tlCanvas.addEventListener('mousedown', e => {
   if (e.offsetY < THUMB_H + WAVE_H) { tlSeek(e.offsetX); return; }
-  tlDragging = true;
   const b32 = Math.floor(e.offsetX / pxPer32);
+  if (selectedBeatChangeType !== null) {
+    const bpm = selectedBeatChangeType === 'normal'
+      ? (parseFloat(document.getElementById('bc-normal-bpm').value) || state.bpm)
+      : null;
+    placeBeatChange(b32, selectedBeatChangeType, bpm);
+    return;
+  }
+  tlDragging = true;
   tlAddMode = !state.dots.has(b32);
   toggleDot(b32, tlAddMode);
 });
@@ -592,10 +706,30 @@ tlCanvas.addEventListener('mousemove', e => {
 });
 window.addEventListener('mouseup', () => { tlDragging = false; });
 
-// Right-click anywhere on timeline → seek
+// Right-click on dot track → remove beat change marker; elsewhere → seek
 tlCanvas.addEventListener('contextmenu', e => {
   e.preventDefault();
+  if (e.offsetY >= THUMB_H + WAVE_H) {
+    const b32 = Math.floor(e.offsetX / pxPer32);
+    const idx = state.beatChanges.findIndex(bc => bc.beat_32 === b32);
+    if (idx >= 0) { state.beatChanges.splice(idx, 1); drawTimeline(); return; }
+  }
   tlSeek(e.offsetX);
+});
+
+// Drag beat change type from palette onto dot track
+tlCanvas.addEventListener('dragover', e => {
+  if (e.offsetY >= THUMB_H + WAVE_H) e.preventDefault();
+});
+tlCanvas.addEventListener('drop', e => {
+  e.preventDefault();
+  if (e.offsetY < THUMB_H + WAVE_H) return;
+  const type = e.dataTransfer.getData('beat-change-type');
+  if (!type) return;
+  const bpm = type === 'normal'
+    ? (parseFloat(document.getElementById('bc-normal-bpm').value) || state.bpm)
+    : null;
+  placeBeatChange(Math.floor(e.offsetX / pxPer32), type, bpm);
 });
 
 // Scroll wheel → zoom, anchored to cursor position
@@ -626,7 +760,24 @@ function toggleDot(b32, add) {
 
 // ─── Fill beats button ────────────────────────────────────────────────────────
 document.getElementById('fill-beats-btn').addEventListener('click', () => {
-  for (let i = 0; i < totalBeat32; i += 8) state.dots.add(i);
+  state.dots.clear();
+  const STEPS = { none: null, half: 16, normal: 8, double: 4 };
+  const changes = [...state.beatChanges].sort((a, b) => a.beat_32 - b.beat_32);
+
+  // Build sections: [start, end) with a type
+  const sections = [];
+  let prev = 0, prevType = 'normal';
+  for (const bc of changes) {
+    sections.push({ start: prev, end: bc.beat_32, type: prevType });
+    prev = bc.beat_32; prevType = bc.type;
+  }
+  sections.push({ start: prev, end: totalBeat32, type: prevType });
+
+  for (const { start, end, type } of sections) {
+    const step = STEPS[type];
+    if (step === null) continue;
+    for (let i = start; i < end; i += step) state.dots.add(i);
+  }
   drawTimeline();
   drawOverlay();
 });
@@ -681,6 +832,11 @@ function buildProject() {
       dot_travel_seconds: state.dotTravel,
     },
     dots: [...state.dots].sort((a, b) => a - b).map(b => ({ beat_32: b })),
+    beat_changes: state.beatChanges.map(bc => {
+      const entry = { beat_32: bc.beat_32, type: bc.type };
+      if (bc.type === 'normal' && bc.bpm != null) entry.bpm = bc.bpm;
+      return entry;
+    }),
     output: state.outputPath,
   };
 }
@@ -715,6 +871,11 @@ function applyProject(p) {
   }
   state.dots.clear();
   (p.dots ?? []).forEach(d => state.dots.add(d.beat_32));
+  state.beatChanges = (p.beat_changes ?? []).map(bc => {
+    const entry = { beat_32: bc.beat_32, type: bc.type };
+    if (bc.type === 'normal' && bc.bpm != null) entry.bpm = bc.bpm;
+    return entry;
+  });
   if (p.output) {
     state.outputPath = p.output;
     document.getElementById('output-path').value = p.output;

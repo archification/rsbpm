@@ -153,9 +153,9 @@ fn spawn_ffmpeg_overlay(
             "-filter_complex", "[0:v][1:v]overlay=0:0[out]",
             "-map", "[out]",
             "-map", "0:a?",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
+            "-c:v", "h264_nvenc",
+            "-preset", "p4",
+            "-cq", "18",
             "-c:a", "copy",
             output,
         ])

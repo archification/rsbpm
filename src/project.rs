@@ -66,19 +66,65 @@ pub struct DotEvent {
     pub beat_32: u32,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum BeatChangeType {
+    None,
+    Half,
+    Normal,
+    Double,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BeatChange {
+    pub beat_32: u32,
+    #[serde(rename = "type")]
+    pub change_type: BeatChangeType,
+    /// Only meaningful when change_type == Normal; sets BPM from this point forward.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bpm: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub bpm: f64,
     pub bar: BarConfig,
     pub dots: Vec<DotEvent>,
+    #[serde(default)]
+    pub beat_changes: Vec<BeatChange>,
     /// Output file path (relative or absolute)
     pub output: String,
 }
 
 impl Project {
-    /// Convert a 32nd-note index to seconds.
+    /// Convert a 32nd-note index to seconds, respecting any tempo changes.
     pub fn beat32_to_secs(&self, beat_32: u32) -> f64 {
-        let beats = beat_32 as f64 / 8.0; // 8 thirty-second notes per quarter note
-        beats * 60.0 / self.bpm
+        // Build sorted list of (beat_32, bpm) anchor points.
+        let mut tempo: Vec<(u32, f64)> = vec![(0, self.bpm)];
+        let mut changes = self.beat_changes.clone();
+        changes.sort_by_key(|bc| bc.beat_32);
+        for bc in &changes {
+            if bc.change_type == BeatChangeType::Normal {
+                if let Some(bpm) = bc.bpm {
+                    if bc.beat_32 == 0 {
+                        tempo[0].1 = bpm;
+                    } else {
+                        tempo.push((bc.beat_32, bpm));
+                    }
+                }
+            }
+        }
+
+        let mut secs = 0.0f64;
+        let mut i = 0;
+        while i + 1 < tempo.len() && tempo[i + 1].0 < beat_32 {
+            let (b0, bpm0) = tempo[i];
+            let b1 = tempo[i + 1].0;
+            secs += (b1 - b0) as f64 / 8.0 * 60.0 / bpm0;
+            i += 1;
+        }
+        let (b0, bpm0) = tempo[i];
+        secs += (beat_32 - b0) as f64 / 8.0 * 60.0 / bpm0;
+        secs
     }
 }
