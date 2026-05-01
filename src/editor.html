@@ -58,7 +58,7 @@
   <label>Output <input id="output-path" type="text" value="output.mp4" style="width:140px"></label>
   <div class="sep"></div>
   <button id="play-btn">&#9654; Play</button>
-  <label>Vol <input id="volume" type="range" min="0" max="1" step="0.01" value="1" style="width:70px"></label>
+  <label>Vol <input id="volume" type="range" min="0" max="1" step="0.01" value="0.4" style="width:70px"></label>
   <label>Time: <span id="time-display">0.00</span>s</label>
   <div class="sep"></div>
   <button id="fill-beats-btn">Fill Beats</button>
@@ -283,6 +283,7 @@ document.getElementById('dir-both').addEventListener('click', () => setDirection
 
 // ─── Video & Audio loading ────────────────────────────────────────────────────
 const videoEl = document.getElementById('video');
+VideoEl.volume = 0.4;
 const overlayCanvas = document.getElementById('overlay-canvas');
 const overlayCtx = overlayCanvas.getContext('2d');
 
