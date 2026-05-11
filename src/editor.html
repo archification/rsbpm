@@ -602,6 +602,22 @@ function drawTimeline() {
   tlCtx.fillStyle = '#1a1a1a';
   tlCtx.fillRect(0, dotY, w, DOT_H);
 
+  // Shade "no beats" sections (initial state is none; each track must be
+  // explicitly started with a Normal flag)
+  {
+    const bcs = [...state.beatChanges].sort((a, b) => a.beat_32 - b.beat_32);
+    let secType = 'none', secStart = 0;
+    const shadeNone = (x1, x2) => {
+      tlCtx.fillStyle = 'rgba(180,40,40,0.18)';
+      tlCtx.fillRect(x1, dotY, x2 - x1, DOT_H);
+    };
+    for (const bc of bcs) {
+      if (secType === 'none') shadeNone(secStart * pxPer32, bc.beat_32 * pxPer32);
+      secStart = bc.beat_32; secType = bc.type;
+    }
+    if (secType === 'none') shadeNone(secStart * pxPer32, w);
+  }
+
   for (let i = 0; i < totalBeat32; i++) {
     const x = i * pxPer32;
     if (x > w) break;
@@ -767,7 +783,7 @@ document.getElementById('fill-beats-btn').addEventListener('click', () => {
 
   // Build sections: [start, end) with a type
   const sections = [];
-  let prev = 0, prevType = 'normal';
+  let prev = 0, prevType = 'none';
   for (const bc of changes) {
     sections.push({ start: prev, end: bc.beat_32, type: prevType });
     prev = bc.beat_32; prevType = bc.type;
