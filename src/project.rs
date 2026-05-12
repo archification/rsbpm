@@ -60,10 +60,11 @@ impl Default for BarConfig {
     }
 }
 
-/// A single dot event. `beat_32` is the index in 32nd-note units from time=0.
+/// A single dot event. `beat_32` is the position in 32nd-note units from time=0.
+/// Fractional values are used in triplet sections (multiples of 4/3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DotEvent {
-    pub beat_32: u32,
+    pub beat_32: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -73,6 +74,7 @@ pub enum BeatChangeType {
     Half,
     Normal,
     Double,
+    Triplet,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,9 +88,55 @@ pub struct BeatChange {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Fx {
+    #[serde(rename = "speedUp", default = "default_true")]
+    pub speed_up: bool,
+    #[serde(rename = "speedPower", default = "default_speed_power")]
+    pub speed_power: f32,
+    #[serde(rename = "hitGlow", default = "default_true")]
+    pub hit_glow: bool,
+    #[serde(rename = "hitGlowDur", default = "default_hit_glow_dur")]
+    pub hit_glow_dur: f64,
+    #[serde(rename = "dotShrink", default = "default_true")]
+    pub dot_shrink: bool,
+    #[serde(rename = "shrinkDur", default = "default_shrink_dur")]
+    pub shrink_dur: f64,
+    #[serde(rename = "dotGlow", default = "default_true")]
+    pub dot_glow: bool,
+    #[serde(rename = "dotGlowInt", default = "default_dot_glow_int")]
+    pub dot_glow_int: f32,
+    #[serde(rename = "beatOffset", default)]
+    pub beat_offset: f64,
+}
+
+fn default_true() -> bool { true }
+fn default_speed_power() -> f32 { 2.5 }
+fn default_hit_glow_dur() -> f64 { 0.25 }
+fn default_shrink_dur() -> f64 { 0.12 }
+fn default_dot_glow_int() -> f32 { 0.7 }
+
+impl Default for Fx {
+    fn default() -> Self {
+        Self {
+            speed_up: true,
+            speed_power: 2.5,
+            hit_glow: true,
+            hit_glow_dur: 0.25,
+            dot_shrink: true,
+            shrink_dur: 0.12,
+            dot_glow: true,
+            dot_glow_int: 0.7,
+            beat_offset: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub bpm: f64,
     pub bar: BarConfig,
+    #[serde(default)]
+    pub fx: Fx,
     pub dots: Vec<DotEvent>,
     #[serde(default)]
     pub beat_changes: Vec<BeatChange>,
@@ -97,20 +145,17 @@ pub struct Project {
 }
 
 impl Project {
-    /// Convert a 32nd-note index to seconds, respecting any tempo changes.
-    pub fn beat32_to_secs(&self, beat_32: u32) -> f64 {
-        // Build sorted list of (beat_32, bpm) anchor points.
-        let mut tempo: Vec<(u32, f64)> = vec![(0, self.bpm)];
+    /// Convert a 32nd-note position to seconds, respecting any tempo changes.
+    /// Accepts fractional values for triplet positions.
+    pub fn beat32_to_secs(&self, beat_32: f64) -> f64 {
+        let mut tempo: Vec<(f64, f64)> = vec![(0.0, self.bpm)];
         let mut changes = self.beat_changes.clone();
-        changes.sort_by_key(|bc| bc.beat_32);
+        changes.sort_by(|a, b| a.beat_32.cmp(&b.beat_32));
         for bc in &changes {
             if bc.change_type == BeatChangeType::Normal {
                 if let Some(bpm) = bc.bpm {
-                    if bc.beat_32 == 0 {
-                        tempo[0].1 = bpm;
-                    } else {
-                        tempo.push((bc.beat_32, bpm));
-                    }
+                    let b = bc.beat_32 as f64;
+                    if b == 0.0 { tempo[0].1 = bpm; } else { tempo.push((b, bpm)); }
                 }
             }
         }
@@ -120,11 +165,11 @@ impl Project {
         while i + 1 < tempo.len() && tempo[i + 1].0 < beat_32 {
             let (b0, bpm0) = tempo[i];
             let b1 = tempo[i + 1].0;
-            secs += (b1 - b0) as f64 / 8.0 * 60.0 / bpm0;
+            secs += (b1 - b0) / 8.0 * 60.0 / bpm0;
             i += 1;
         }
         let (b0, bpm0) = tempo[i];
-        secs += (beat_32 - b0) as f64 / 8.0 * 60.0 / bpm0;
+        secs += (beat_32 - b0) / 8.0 * 60.0 / bpm0;
         secs
     }
 }

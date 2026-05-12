@@ -44,6 +44,8 @@
   #render-btn { background: #2a5a2a; border-color: #4a9a4a; }
   #render-btn:hover { background: #3a7a3a; }
   #status { color: #888; font-size: 11px; }
+  input[type=checkbox] { accent-color: #aaa; cursor: pointer; }
+  .fx-val { min-width: 28px; text-align: right; font-size: 11px; color: #999; flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -108,6 +110,15 @@
     </div>
 
     <div class="section">
+      <h3>Effects</h3>
+      <div class="row"><label><input type="checkbox" id="fx-speedup" checked> Speed-up</label><input type="range" id="fx-speedup-power" min="1" max="5" step="0.1" value="2.5" title="Acceleration power (1=linear)"><span class="fx-val" id="fx-speedup-val">2.5</span></div>
+      <div class="row"><label><input type="checkbox" id="fx-hitglow" checked> Hit Glow</label><input type="range" id="fx-hitglow-dur" min="0.05" max="0.6" step="0.01" value="0.25" title="Glow duration (s)"><span class="fx-val" id="fx-hitglow-val">.25s</span></div>
+      <div class="row"><label><input type="checkbox" id="fx-shrink" checked> Shrink</label><input type="range" id="fx-shrink-dur" min="0.03" max="0.3" step="0.01" value="0.12" title="Shrink duration (s)"><span class="fx-val" id="fx-shrink-val">.12s</span></div>
+      <div class="row"><label><input type="checkbox" id="fx-dotglow" checked> Dot Glow</label><input type="range" id="fx-dotglow-int" min="0" max="1" step="0.05" value="0.7" title="Glow intensity"><span class="fx-val" id="fx-dotglow-val">0.70</span></div>
+      <div class="row"><label>Hit offset</label><input type="range" id="fx-offset" min="-0.1" max="0.1" step="0.005" value="0" title="Shift when hit effects trigger (s)"><span class="fx-val" id="fx-offset-val">+0.00s</span></div>
+    </div>
+
+    <div class="section">
       <h3>Beat Changes</h3>
       <div style="font-size:10px;color:#777;margin-bottom:6px">Select · click dot track to place · right-click to remove</div>
       <div id="beat-change-palette" style="display:grid;grid-template-columns:1fr 1fr;gap:4px"></div>
@@ -150,6 +161,13 @@ const state = {
   endRadius: 22,
   outputPath: 'output.mp4',
   beatChanges: [],        // [{beat_32, type}] sorted by beat_32
+  fx: {
+    speedUp: true,  speedPower: 2.5,
+    hitGlow: true,  hitGlowDur: 0.25,
+    dotShrink: true, shrinkDur: 0.12,
+    dotGlow: true,  dotGlowInt: 0.7,
+    beatOffset: 0.0,
+  },
 };
 
 // ─── Pastel palette ───────────────────────────────────────────────────────────
@@ -190,10 +208,11 @@ makePalette('end-color-palette', 'endColor');
 
 // ─── Beat change palette ──────────────────────────────────────────────────────
 const BEAT_CHANGE_TYPES = [
-  { type: 'none',   symbol: '∅', label: 'No Beats',     color: '#cc4444' },
-  { type: 'half',   symbol: '½', label: 'Half Beats',   color: '#ccaa44' },
-  { type: 'normal', symbol: '♩', label: 'Normal Beats', color: '#44aa77' },
-  { type: 'double', symbol: '♫', label: 'Double Beats', color: '#4488cc' },
+  { type: 'none',    symbol: '∅', label: 'No Beats',     color: '#cc4444' },
+  { type: 'half',    symbol: '½', label: 'Half Beats',   color: '#ccaa44' },
+  { type: 'normal',  symbol: '♩', label: 'Normal Beats', color: '#44aa77' },
+  { type: 'double',  symbol: '♫', label: 'Double Beats', color: '#4488cc' },
+  { type: 'triplet', symbol: '³', label: 'Triplets',     color: '#aa44cc' },
 ];
 const BC_COLORS = Object.fromEntries(BEAT_CHANGE_TYPES.map(t => [t.type, t.color]));
 const BC_SYMBOLS = Object.fromEntries(BEAT_CHANGE_TYPES.map(t => [t.type, t.symbol]));
@@ -257,6 +276,24 @@ bindNum('bar-height', 'barHeight');
 bindNum('dot-radius', 'dotRadius');
 bindNum('dot-travel', 'dotTravel');
 bindNum('end-radius', 'endRadius');
+
+// ── Effects bindings ──────────────────────────────────────────────────────
+function bindFxCheck(id, key) {
+  document.getElementById(id).addEventListener('change', e => { state.fx[key] = e.target.checked; drawOverlay(); });
+}
+function bindFxSlider(id, valId, key, fmt) {
+  const el = document.getElementById(id), lbl = document.getElementById(valId);
+  el.addEventListener('input', () => { state.fx[key] = parseFloat(el.value); lbl.textContent = fmt(parseFloat(el.value)); drawOverlay(); });
+}
+bindFxCheck('fx-speedup', 'speedUp');
+bindFxSlider('fx-speedup-power', 'fx-speedup-val', 'speedPower', v => v.toFixed(1));
+bindFxCheck('fx-hitglow', 'hitGlow');
+bindFxSlider('fx-hitglow-dur', 'fx-hitglow-val', 'hitGlowDur', v => v.toFixed(2) + 's');
+bindFxCheck('fx-shrink', 'dotShrink');
+bindFxSlider('fx-shrink-dur', 'fx-shrink-val', 'shrinkDur', v => v.toFixed(2) + 's');
+bindFxCheck('fx-dotglow', 'dotGlow');
+bindFxSlider('fx-dotglow-int', 'fx-dotglow-val', 'dotGlowInt', v => v.toFixed(2));
+bindFxSlider('fx-offset', 'fx-offset-val', 'beatOffset', v => (v >= 0 ? '+' : '') + v.toFixed(3) + 's');
 
 document.getElementById('bpm').addEventListener('input', e => {
   state.bpm = parseFloat(e.target.value) || 120;
@@ -488,12 +525,36 @@ function drawOverlay() {
   const endX = state.endX * w;
   const t = currentVideoTime();
   const travel = state.dotTravel;
+  const fx = state.fx;
 
   // Bar background
   overlayCtx.fillStyle = `rgba(0,0,0,${state.barOpacity / 255})`;
   overlayCtx.fillRect(0, barY - halfH, w, state.barHeight);
 
-  // End circle (ring) — outer edge at endRadius, inner hole smaller than dotRadius so dots overlap
+  // ── Hit glow behind end circle ───────────────────────────────────────────
+  if (fx.hitGlow) {
+    let maxGlow = 0;
+    for (const b32 of state.dots) {
+      const age = t - (beat32ToSecs(b32) + fx.beatOffset);
+      if (age >= 0 && age < fx.hitGlowDur) {
+        const v = 1 - age / fx.hitGlowDur;
+        if (v > maxGlow) maxGlow = v;
+      }
+    }
+    if (maxGlow > 0) {
+      const ec = state.endColor;
+      const outerR = state.endRadius * (1 + maxGlow * 1.6);
+      const grad = overlayCtx.createRadialGradient(endX, barY, state.endRadius * 0.4, endX, barY, outerR);
+      grad.addColorStop(0, `rgba(${ec.r},${ec.g},${ec.b},${(maxGlow * 0.85).toFixed(3)})`);
+      grad.addColorStop(1, `rgba(${ec.r},${ec.g},${ec.b},0)`);
+      overlayCtx.beginPath();
+      overlayCtx.arc(endX, barY, outerR, 0, Math.PI * 2);
+      overlayCtx.fillStyle = grad;
+      overlayCtx.fill();
+    }
+  }
+
+  // ── End circle ring ──────────────────────────────────────────────────────
   const innerR = state.dotRadius * 0.6;
   const ringWidth = Math.max(2, state.endRadius - innerR);
   const ringRadius = (state.endRadius + innerR) / 2;
@@ -503,22 +564,58 @@ function drawOverlay() {
   overlayCtx.lineWidth = ringWidth;
   overlayCtx.stroke();
 
-  // Dots
-  overlayCtx.fillStyle = cssColor(state.dotColor);
+  // ── Dots ─────────────────────────────────────────────────────────────────
   for (const b32 of state.dots) {
     const hitTime = beat32ToSecs(b32);
+    const effectStart = hitTime + fx.beatOffset;
     const startTime = hitTime - travel;
-    if (t < startTime || t > hitTime + 0.15) continue;
-    const progress = Math.min(1, (t - startTime) / travel);
+    const postEffect = t - effectStart;
+    const inShrink = fx.dotShrink && postEffect >= 0 && postEffect < fx.shrinkDur;
+    const inBrief  = !fx.dotShrink && t >= hitTime && t < hitTime + 0.1;
+    const inTravel = t >= startTime && !inShrink && t < hitTime;
+    if (!inTravel && !inShrink && !inBrief) continue;
+
+    let progress, dotR;
+    if (inShrink) {
+      progress = 1.0;
+      dotR = state.dotRadius * Math.max(0, 1 - postEffect / fx.shrinkDur);
+    } else {
+      const linear = Math.max(0, Math.min(1, (t - startTime) / travel));
+      progress = (fx.speedUp && fx.speedPower > 1) ? Math.pow(linear, fx.speedPower) : linear;
+      dotR = state.dotRadius;
+    }
+    if (dotR <= 0) continue;
+
     const dotXs = [];
     if (state.direction === 'lefttoright' || state.direction === 'bothdirections')
       dotXs.push(endX * progress);
     if (state.direction === 'righttoleft' || state.direction === 'bothdirections')
       dotXs.push(w + (endX - w) * progress);
+
     for (const dotX of dotXs) {
-      overlayCtx.beginPath();
-      overlayCtx.arc(dotX, barY, state.dotRadius, 0, Math.PI * 2);
-      overlayCtx.fill();
+      if (fx.dotGlow) {
+        const glowR = dotR * (1 + fx.dotGlowInt * 2.5);
+        const dc = state.dotColor;
+        const baseA = dc.a / 255;
+        const grad = overlayCtx.createRadialGradient(dotX, barY, 0, dotX, barY, glowR);
+        grad.addColorStop(0,            `rgba(${dc.r},${dc.g},${dc.b},${baseA.toFixed(3)})`);
+        grad.addColorStop(dotR / glowR, `rgba(${dc.r},${dc.g},${dc.b},${(baseA * fx.dotGlowInt).toFixed(3)})`);
+        grad.addColorStop(1,            `rgba(${dc.r},${dc.g},${dc.b},0)`);
+        overlayCtx.beginPath();
+        overlayCtx.arc(dotX, barY, glowR, 0, Math.PI * 2);
+        overlayCtx.fillStyle = grad;
+        overlayCtx.fill();
+        // solid core on top of the glow
+        overlayCtx.beginPath();
+        overlayCtx.arc(dotX, barY, dotR, 0, Math.PI * 2);
+        overlayCtx.fillStyle = cssColor(state.dotColor);
+        overlayCtx.fill();
+      } else {
+        overlayCtx.fillStyle = cssColor(state.dotColor);
+        overlayCtx.beginPath();
+        overlayCtx.arc(dotX, barY, dotR, 0, Math.PI * 2);
+        overlayCtx.fill();
+      }
     }
   }
 }
@@ -602,33 +699,57 @@ function drawTimeline() {
   tlCtx.fillStyle = '#1a1a1a';
   tlCtx.fillRect(0, dotY, w, DOT_H);
 
-  // Shade "no beats" sections (initial state is none; each track must be
-  // explicitly started with a Normal flag)
+  // Build sections once — used for shading, grid lines, and snapping
   {
     const bcs = [...state.beatChanges].sort((a, b) => a.beat_32 - b.beat_32);
     let secType = 'none', secStart = 0;
-    const shadeNone = (x1, x2) => {
-      tlCtx.fillStyle = 'rgba(180,40,40,0.18)';
-      tlCtx.fillRect(x1, dotY, x2 - x1, DOT_H);
-    };
     for (const bc of bcs) {
-      if (secType === 'none') shadeNone(secStart * pxPer32, bc.beat_32 * pxPer32);
+      const x1 = secStart * pxPer32, x2 = bc.beat_32 * pxPer32;
+      if (secType === 'none')    { tlCtx.fillStyle = 'rgba(180,40,40,0.18)';  tlCtx.fillRect(x1, dotY, x2 - x1, DOT_H); }
+      if (secType === 'triplet') { tlCtx.fillStyle = 'rgba(150,50,220,0.12)'; tlCtx.fillRect(x1, dotY, x2 - x1, DOT_H); }
       secStart = bc.beat_32; secType = bc.type;
     }
-    if (secType === 'none') shadeNone(secStart * pxPer32, w);
+    const x1 = secStart * pxPer32;
+    if (secType === 'none')    { tlCtx.fillStyle = 'rgba(180,40,40,0.18)';  tlCtx.fillRect(x1, dotY, w - x1, DOT_H); }
+    if (secType === 'triplet') { tlCtx.fillStyle = 'rgba(150,50,220,0.12)'; tlCtx.fillRect(x1, dotY, w - x1, DOT_H); }
   }
 
-  for (let i = 0; i < totalBeat32; i++) {
-    const x = i * pxPer32;
-    if (x > w) break;
-    if      (i % 32 === 0) { tlCtx.strokeStyle = '#666';   tlCtx.lineWidth = 1.5; }
-    else if (i %  8 === 0) { tlCtx.strokeStyle = '#444';   tlCtx.lineWidth = 1;   }
-    else if (i %  4 === 0) { tlCtx.strokeStyle = '#303030'; tlCtx.lineWidth = 0.5; }
-    else                   { tlCtx.strokeStyle = '#232323'; tlCtx.lineWidth = 0.5; }
-    tlCtx.beginPath();
-    tlCtx.moveTo(x, dotY);
-    tlCtx.lineTo(x, TL_H);
-    tlCtx.stroke();
+  // Section-aware grid lines
+  {
+    const bcs = [...state.beatChanges].sort((a, b) => a.beat_32 - b.beat_32);
+    const sections = [];
+    let prev = 0, prevType = 'none';
+    for (const bc of bcs) { sections.push({ start: prev, end: bc.beat_32, type: prevType }); prev = bc.beat_32; prevType = bc.type; }
+    sections.push({ start: prev, end: totalBeat32, type: prevType });
+
+    for (const { start, end, type } of sections) {
+      if (type === 'triplet') {
+        // 6 triplet-16th slots per beat; bar = 24 ticks, beat = 6 ticks, half-beat = 3 ticks
+        const TRIP = 4 / 3;
+        const count = Math.ceil((end - start) / TRIP);
+        for (let n = 0; n < count; n++) {
+          const pos = start + n * TRIP;
+          if (pos >= end) break;
+          const x = pos * pxPer32;
+          if (x > w) break;
+          if      (n % 24 === 0) { tlCtx.strokeStyle = '#888';    tlCtx.lineWidth = 1.5; }
+          else if (n %  6 === 0) { tlCtx.strokeStyle = '#555';    tlCtx.lineWidth = 1;   }
+          else if (n %  3 === 0) { tlCtx.strokeStyle = '#3a3a3a'; tlCtx.lineWidth = 0.5; }
+          else                   { tlCtx.strokeStyle = '#2d2d2d'; tlCtx.lineWidth = 0.5; }
+          tlCtx.beginPath(); tlCtx.moveTo(x, dotY); tlCtx.lineTo(x, TL_H); tlCtx.stroke();
+        }
+      } else {
+        for (let i = Math.floor(start); i < end; i++) {
+          const x = i * pxPer32;
+          if (x > w) break;
+          if      (i % 32 === 0) { tlCtx.strokeStyle = '#888';    tlCtx.lineWidth = 1.5; }
+          else if (i %  8 === 0) { tlCtx.strokeStyle = '#555';    tlCtx.lineWidth = 1;   }
+          else if (i %  4 === 0) { tlCtx.strokeStyle = '#3a3a3a'; tlCtx.lineWidth = 0.5; }
+          else                   { tlCtx.strokeStyle = '#2d2d2d'; tlCtx.lineWidth = 0.5; }
+          tlCtx.beginPath(); tlCtx.moveTo(x, dotY); tlCtx.lineTo(x, TL_H); tlCtx.stroke();
+        }
+      }
+    }
   }
 
   tlCtx.fillStyle = cssColor(state.dotColor);
@@ -682,6 +803,24 @@ function updatePlayhead() {
   }
 }
 
+// Snaps a pixel x offset to the appropriate beat_32 position based on section type.
+// Returns a float for triplet sections, integer otherwise.
+function snapB32(offsetX) {
+  const rawB32 = offsetX / pxPer32;
+  const bcs = [...state.beatChanges].sort((a, b) => a.beat_32 - b.beat_32);
+  let secType = 'none', secStart = 0;
+  for (const bc of bcs) {
+    if (bc.beat_32 > rawB32) break;
+    secType = bc.type; secStart = bc.beat_32;
+  }
+  if (secType === 'triplet') {
+    const TRIP = 4 / 3;
+    const n = Math.round((rawB32 - secStart) / TRIP);
+    return secStart + n * TRIP;
+  }
+  return Math.floor(rawB32);
+}
+
 // Timeline click/drag to add or remove dots
 let tlDragging = false;
 let tlAddMode = true;
@@ -704,22 +843,22 @@ function placeBeatChange(b32, type, bpm) {
 
 tlCanvas.addEventListener('mousedown', e => {
   if (e.offsetY < THUMB_H + WAVE_H) { tlSeek(e.offsetX); return; }
-  const b32 = Math.floor(e.offsetX / pxPer32);
   if (selectedBeatChangeType !== null) {
+    const b32 = Math.floor(e.offsetX / pxPer32);
     const bpm = selectedBeatChangeType === 'normal'
       ? (parseFloat(document.getElementById('bc-normal-bpm').value) || state.bpm)
       : null;
     placeBeatChange(b32, selectedBeatChangeType, bpm);
     return;
   }
+  const b32 = snapB32(e.offsetX);
   tlDragging = true;
   tlAddMode = !state.dots.has(b32);
   toggleDot(b32, tlAddMode);
 });
 tlCanvas.addEventListener('mousemove', e => {
   if (!tlDragging) return;
-  const b32 = Math.floor(e.offsetX / pxPer32);
-  toggleDot(b32, tlAddMode);
+  toggleDot(snapB32(e.offsetX), tlAddMode);
 });
 window.addEventListener('mouseup', () => { tlDragging = false; });
 
@@ -791,9 +930,20 @@ document.getElementById('fill-beats-btn').addEventListener('click', () => {
   sections.push({ start: prev, end: totalBeat32, type: prevType });
 
   for (const { start, end, type } of sections) {
-    const step = STEPS[type];
-    if (step === null) continue;
-    for (let i = start; i < end; i += step) state.dots.add(i);
+    if (type === 'triplet') {
+      // Fill every triplet-8th (3 per beat). Use index multiplication (not +=)
+      // so stored floats match what snapB32 produces: start + n*2*(4/3).
+      const TRIP = 4 / 3;
+      for (let n = 0; ; n++) {
+        const pos = start + n * 2 * TRIP;
+        if (pos >= end) break;
+        state.dots.add(pos);
+      }
+    } else {
+      const step = STEPS[type];
+      if (step === null) continue;
+      for (let i = start; i < end; i += step) state.dots.add(i);
+    }
   }
   drawTimeline();
   drawOverlay();
@@ -848,6 +998,7 @@ function buildProject() {
       end_circle_radius: state.endRadius,
       dot_travel_seconds: state.dotTravel,
     },
+    fx: { ...state.fx },
     dots: [...state.dots].sort((a, b) => a - b).map(b => ({ beat_32: b })),
     beat_changes: state.beatChanges.map(bc => {
       const entry = { beat_32: bc.beat_32, type: bc.type };
@@ -885,6 +1036,24 @@ function applyProject(p) {
     document.getElementById('end-radius').value = state.endRadius;
     document.getElementById('dot-radius').value = state.dotRadius;
     document.getElementById('dot-travel').value = state.dotTravel;
+  }
+  if (p.fx) {
+    Object.assign(state.fx, p.fx);
+    const f = state.fx;
+    document.getElementById('fx-speedup').checked = f.speedUp;
+    document.getElementById('fx-speedup-power').value = f.speedPower;
+    document.getElementById('fx-speedup-val').textContent = f.speedPower.toFixed(1);
+    document.getElementById('fx-hitglow').checked = f.hitGlow;
+    document.getElementById('fx-hitglow-dur').value = f.hitGlowDur;
+    document.getElementById('fx-hitglow-val').textContent = f.hitGlowDur.toFixed(2) + 's';
+    document.getElementById('fx-shrink').checked = f.dotShrink;
+    document.getElementById('fx-shrink-dur').value = f.shrinkDur;
+    document.getElementById('fx-shrink-val').textContent = f.shrinkDur.toFixed(2) + 's';
+    document.getElementById('fx-dotglow').checked = f.dotGlow;
+    document.getElementById('fx-dotglow-int').value = f.dotGlowInt;
+    document.getElementById('fx-dotglow-val').textContent = f.dotGlowInt.toFixed(2);
+    document.getElementById('fx-offset').value = f.beatOffset;
+    document.getElementById('fx-offset-val').textContent = (f.beatOffset >= 0 ? '+' : '') + f.beatOffset.toFixed(3) + 's';
   }
   state.dots.clear();
   (p.dots ?? []).forEach(d => state.dots.add(d.beat_32));
