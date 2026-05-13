@@ -32,9 +32,10 @@
   .color-swatch { width: 22px; height: 22px; border: 2px solid #555; cursor: pointer; border-radius: 3px; flex-shrink: 0; }
   .color-picker-wrap { position: relative; }
 
-  #bottom { background: #151515; border-top: 1px solid #333; display: flex; flex-direction: column; }
+  #bottom { background: #151515; border-top: 1px solid #333; display: flex; flex-direction: column; flex-shrink: 0; }
   #timeline-scroll { overflow-x: auto; overflow-y: hidden; }
-  #timeline-canvas { display: block; cursor: pointer; }
+  #timeline-inner { position: relative; }
+  #timeline-canvas { position: absolute; top: 0; left: 0; cursor: pointer; }
   #playhead-row { position: relative; height: 6px; background: #111; }
 
   .color-palette { display: flex; gap: 4px; flex-wrap: wrap; }
@@ -57,6 +58,7 @@
   <input id="audio-file" type="file" accept="audio/*" style="display:none">
   <div class="sep"></div>
   <label>BPM <input id="bpm" type="number" value="120" min="1" max="300" step="0.01" style="width:70px"></label>
+  <button id="id-song-btn" title="Send ~10s of audio near the playhead to audd.io to identify the song">ID Song</button>
   <label>Output <input id="output-path" type="text" value="output.mp4" style="width:140px"></label>
   <div class="sep"></div>
   <button id="play-btn">&#9654; Play</button>
@@ -67,6 +69,7 @@
   <button id="clear-dots-btn">Clear All</button>
   <div class="sep"></div>
   <button id="render-btn">&#9654; Render</button>
+  <label title="Render only the animated bar overlay with a transparent background (ProRes 4444). Use this to composite in Kdenlive without re-encoding the source video."><input type="checkbox" id="overlay-only-cb"> Overlay only</label>
   <span id="status"></span>
 </div>
 
@@ -139,7 +142,9 @@
 
 <div id="bottom">
   <div id="timeline-scroll">
-    <canvas id="timeline-canvas"></canvas>
+    <div id="timeline-inner">
+      <canvas id="timeline-canvas"></canvas>
+    </div>
   </div>
 </div>
 
@@ -625,8 +630,10 @@ window.addEventListener('resize', () => { resizeOverlay(); drawOverlay(); });
 // ─── Timeline ─────────────────────────────────────────────────────────────────
 const tlCanvas = document.getElementById('timeline-canvas');
 const tlCtx = tlCanvas.getContext('2d');
+const tlInner = document.getElementById('timeline-inner');
 let pxPer32 = 14;          // pixels per 32nd-note slot — changes with zoom
 let totalBeat32 = 0;
+let canvasOffsetPx = 0;    // timeline pixel where the canvas left edge sits
 
 // Timeline layout rows
 const THUMB_H = 56, WAVE_H = 40, DOT_H = 64;
@@ -649,36 +656,52 @@ function buildTimeline() {
   totalBeat32 = Math.ceil(dur * beatsPerSec * 8) + 8;
   // Never shrink below what's needed to show all placed dots
   for (const b of state.dots) if (b + 8 > totalBeat32) totalBeat32 = b + 8;
-  tlCanvas.width = totalBeat32 * pxPer32;
+  // Canvas width above ~32767px causes the browser backing store to silently fail.
+  // Instead of reducing pxPer32, we keep user zoom and use a virtual canvas that
+  // slides within a full-width inner div, redrawing on scroll.
+  const MAX_CANVAS_W = 32766;
+  const fullW = totalBeat32 * pxPer32;
+  const canvasW = Math.min(fullW, MAX_CANVAS_W);
+  tlInner.style.width = fullW + 'px';
+  tlInner.style.height = TL_H + 'px';
+  tlCanvas.width = canvasW;
   tlCanvas.height = TL_H;
+  const scrollEl = document.getElementById('timeline-scroll');
+  canvasOffsetPx = Math.min(scrollEl.scrollLeft, Math.max(0, fullW - canvasW));
+  tlCanvas.style.left = canvasOffsetPx + 'px';
   drawTimeline();
 }
 
 function drawTimeline() {
   const w = tlCanvas.width;
+  const off = canvasOffsetPx;   // timeline-px where canvas left edge sits
   const pxPerSec = pxPer32 * state.bpm / 60 * 8;
-  tlCtx.clearRect(0, 0, w, TL_H);
+
+  // Translate so all coordinates are in full-timeline space; canvas clips the rest.
+  tlCtx.save();
+  tlCtx.translate(-off, 0);
+  tlCtx.clearRect(off, 0, w, TL_H);
 
   // ── Video thumbnail strip ────────────────────────────────────────────────
   tlCtx.fillStyle = '#0d0d0d';
-  tlCtx.fillRect(0, 0, w, THUMB_H);
+  tlCtx.fillRect(off, 0, w, THUMB_H);
   for (const {time, bitmap, interval} of thumbnailBitmaps) {
     const x = time * pxPerSec;
     const tw = interval * pxPerSec;
-    if (x > w || x + tw < 0) continue;
+    if (x > off + w || x + tw < off) continue;
     tlCtx.drawImage(bitmap, x, 0, tw, THUMB_H);
   }
 
   // ── Waveform strip ───────────────────────────────────────────────────────
   tlCtx.fillStyle = '#111';
-  tlCtx.fillRect(0, THUMB_H, w, WAVE_H);
+  tlCtx.fillRect(off, THUMB_H, w, WAVE_H);
   if (waveformData) {
     const midY = THUMB_H + WAVE_H / 2;
     const half = WAVE_H / 2 - 3;
     tlCtx.strokeStyle = '#3d8c4f';
     tlCtx.lineWidth = 1;
     tlCtx.beginPath();
-    for (let px = 0; px < w; px++) {
+    for (let px = off; px < off + w; px++) {
       const si = Math.floor(px / pxPerSec * WAVE_SPS);
       const amp = (waveformData.samples[si] || 0) * half;
       tlCtx.moveTo(px + 0.5, midY - amp);
@@ -691,13 +714,13 @@ function drawTimeline() {
   tlCtx.strokeStyle = '#2a2a2a';
   tlCtx.lineWidth = 1;
   for (const y of [THUMB_H, THUMB_H + WAVE_H]) {
-    tlCtx.beginPath(); tlCtx.moveTo(0, y); tlCtx.lineTo(w, y); tlCtx.stroke();
+    tlCtx.beginPath(); tlCtx.moveTo(off, y); tlCtx.lineTo(off + w, y); tlCtx.stroke();
   }
 
   // ── Dot track ────────────────────────────────────────────────────────────
   const dotY = THUMB_H + WAVE_H;
   tlCtx.fillStyle = '#1a1a1a';
-  tlCtx.fillRect(0, dotY, w, DOT_H);
+  tlCtx.fillRect(off, dotY, w, DOT_H);
 
   // Build sections once — used for shading, grid lines, and snapping
   {
@@ -710,8 +733,11 @@ function drawTimeline() {
       secStart = bc.beat_32; secType = bc.type;
     }
     const x1 = secStart * pxPer32;
-    if (secType === 'none')    { tlCtx.fillStyle = 'rgba(180,40,40,0.18)';  tlCtx.fillRect(x1, dotY, w - x1, DOT_H); }
-    if (secType === 'triplet') { tlCtx.fillStyle = 'rgba(150,50,220,0.12)'; tlCtx.fillRect(x1, dotY, w - x1, DOT_H); }
+    const right = off + w;
+    if (x1 < right) {
+      if (secType === 'none')    { tlCtx.fillStyle = 'rgba(180,40,40,0.18)';  tlCtx.fillRect(x1, dotY, right - x1, DOT_H); }
+      if (secType === 'triplet') { tlCtx.fillStyle = 'rgba(150,50,220,0.12)'; tlCtx.fillRect(x1, dotY, right - x1, DOT_H); }
+    }
   }
 
   // Section-aware grid lines
@@ -726,12 +752,14 @@ function drawTimeline() {
       if (type === 'triplet') {
         // 6 triplet-16th slots per beat; bar = 24 ticks, beat = 6 ticks, half-beat = 3 ticks
         const TRIP = 4 / 3;
+        // Skip ahead to the first triplet tick visible on the canvas
+        const nStart = Math.max(0, Math.floor((off / pxPer32 - start) / TRIP));
         const count = Math.ceil((end - start) / TRIP);
-        for (let n = 0; n < count; n++) {
+        for (let n = nStart; n < count; n++) {
           const pos = start + n * TRIP;
           if (pos >= end) break;
           const x = pos * pxPer32;
-          if (x > w) break;
+          if (x > off + w) break;
           if      (n % 24 === 0) { tlCtx.strokeStyle = '#888';    tlCtx.lineWidth = 1.5; }
           else if (n %  6 === 0) { tlCtx.strokeStyle = '#555';    tlCtx.lineWidth = 1;   }
           else if (n %  3 === 0) { tlCtx.strokeStyle = '#3a3a3a'; tlCtx.lineWidth = 0.5; }
@@ -739,9 +767,11 @@ function drawTimeline() {
           tlCtx.beginPath(); tlCtx.moveTo(x, dotY); tlCtx.lineTo(x, TL_H); tlCtx.stroke();
         }
       } else {
-        for (let i = Math.floor(start); i < end; i++) {
+        // Skip ahead to the first slot visible on the canvas
+        const iStart = Math.max(Math.floor(start), Math.floor(off / pxPer32));
+        for (let i = iStart; i < end; i++) {
           const x = i * pxPer32;
-          if (x > w) break;
+          if (x > off + w) break;
           if      (i % 32 === 0) { tlCtx.strokeStyle = '#888';    tlCtx.lineWidth = 1.5; }
           else if (i %  8 === 0) { tlCtx.strokeStyle = '#555';    tlCtx.lineWidth = 1;   }
           else if (i %  4 === 0) { tlCtx.strokeStyle = '#3a3a3a'; tlCtx.lineWidth = 0.5; }
@@ -755,7 +785,7 @@ function drawTimeline() {
   tlCtx.fillStyle = cssColor(state.dotColor);
   for (const b32 of state.dots) {
     const x = b32 * pxPer32 + pxPer32 / 2;
-    if (x < 0 || x > w) continue;
+    if (x < off || x > off + w) continue;
     tlCtx.beginPath();
     tlCtx.arc(x, dotY + DOT_H / 2, 5, 0, Math.PI * 2);
     tlCtx.fill();
@@ -764,6 +794,7 @@ function drawTimeline() {
   // ── Beat change markers ───────────────────────────────────────────────────
   for (const bc of state.beatChanges) {
     const x = bc.beat_32 * pxPer32;
+    if (x < off - 100 || x > off + w + 100) continue;
     const color = BC_COLORS[bc.type];
     tlCtx.strokeStyle = color;
     tlCtx.lineWidth = 2;
@@ -791,6 +822,8 @@ function drawTimeline() {
     tlCtx.lineTo(px, TL_H);
     tlCtx.stroke();
   }
+
+  tlCtx.restore();
 }
 
 function updatePlayhead() {
@@ -842,35 +875,37 @@ function placeBeatChange(b32, type, bpm) {
 }
 
 tlCanvas.addEventListener('mousedown', e => {
-  if (e.offsetY < THUMB_H + WAVE_H) { tlSeek(e.offsetX); return; }
+  const tlX = e.offsetX + canvasOffsetPx;
+  if (e.offsetY < THUMB_H + WAVE_H) { tlSeek(tlX); return; }
   if (selectedBeatChangeType !== null) {
-    const b32 = Math.floor(e.offsetX / pxPer32);
+    const b32 = Math.floor(tlX / pxPer32);
     const bpm = selectedBeatChangeType === 'normal'
       ? (parseFloat(document.getElementById('bc-normal-bpm').value) || state.bpm)
       : null;
     placeBeatChange(b32, selectedBeatChangeType, bpm);
     return;
   }
-  const b32 = snapB32(e.offsetX);
+  const b32 = snapB32(tlX);
   tlDragging = true;
   tlAddMode = !state.dots.has(b32);
   toggleDot(b32, tlAddMode);
 });
 tlCanvas.addEventListener('mousemove', e => {
   if (!tlDragging) return;
-  toggleDot(snapB32(e.offsetX), tlAddMode);
+  toggleDot(snapB32(e.offsetX + canvasOffsetPx), tlAddMode);
 });
 window.addEventListener('mouseup', () => { tlDragging = false; });
 
 // Right-click on dot track → remove beat change marker; elsewhere → seek
 tlCanvas.addEventListener('contextmenu', e => {
   e.preventDefault();
+  const tlX = e.offsetX + canvasOffsetPx;
   if (e.offsetY >= THUMB_H + WAVE_H) {
-    const b32 = Math.floor(e.offsetX / pxPer32);
+    const b32 = Math.floor(tlX / pxPer32);
     const idx = state.beatChanges.findIndex(bc => bc.beat_32 === b32);
     if (idx >= 0) { state.beatChanges.splice(idx, 1); drawTimeline(); return; }
   }
-  tlSeek(e.offsetX);
+  tlSeek(tlX);
 });
 
 // Drag beat change type from palette onto dot track
@@ -885,7 +920,7 @@ tlCanvas.addEventListener('drop', e => {
   const bpm = type === 'normal'
     ? (parseFloat(document.getElementById('bc-normal-bpm').value) || state.bpm)
     : null;
-  placeBeatChange(Math.floor(e.offsetX / pxPer32), type, bpm);
+  placeBeatChange(Math.floor((e.offsetX + canvasOffsetPx) / pxPer32), type, bpm);
 });
 
 // Scroll wheel → zoom, anchored to cursor position
@@ -905,6 +940,16 @@ document.getElementById('timeline-scroll').addEventListener('wheel', e => {
   const newPxPerSec = pxPer32 * state.bpm / 60 * 8;
   scrollEl.scrollLeft = timeAtCursor * newPxPerSec - (e.clientX - rect.left);
 }, { passive: false });
+
+// Pan (scroll) → slide the virtual canvas window and redraw
+document.getElementById('timeline-scroll').addEventListener('scroll', () => {
+  const scrollEl = document.getElementById('timeline-scroll');
+  const fullW = totalBeat32 * pxPer32;
+  const maxOffset = Math.max(0, fullW - tlCanvas.width);
+  canvasOffsetPx = Math.min(scrollEl.scrollLeft, maxOffset);
+  tlCanvas.style.left = canvasOffsetPx + 'px';
+  drawTimeline();
+});
 
 function toggleDot(b32, add) {
   if (b32 < 0 || b32 >= totalBeat32) return;
@@ -1073,11 +1118,12 @@ function applyProject(p) {
 // ─── Render ───────────────────────────────────────────────────────────────────
 async function doRender() {
   setStatus('Rendering…');
+  const overlayOnly = document.getElementById('overlay-only-cb').checked;
   const project = buildProject();
   const res = await fetch('/render', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ video_path: state.videoPath, project }),
+    body: JSON.stringify({ video_path: state.videoPath, project, overlay_only: overlayOnly }),
   });
   if (res.ok) {
     setStatus('Render complete: ' + state.outputPath);
@@ -1098,6 +1144,31 @@ document.getElementById('render-btn').addEventListener('click', () => {
 });
 
 function setStatus(s) { document.getElementById('status').textContent = s; }
+
+// ─── Song identification ───────────────────────────────────────────────────────
+document.getElementById('id-song-btn').addEventListener('click', async () => {
+  if (!state.videoPath) { setStatus('Load a video first.'); return; }
+  setStatus('Identifying song…');
+  try {
+    const res = await fetch('/identify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ video_path: state.videoPath, timestamp: videoEl.currentTime }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setStatus('ID failed: ' + (data.message || res.statusText));
+      return;
+    }
+    if (data.result) {
+      setStatus(`${data.result.artist} — ${data.result.title}`);
+    } else {
+      setStatus('Song not recognized.');
+    }
+  } catch (err) {
+    setStatus('ID failed: ' + err);
+  }
+});
 
 buildTimeline();
 </script>

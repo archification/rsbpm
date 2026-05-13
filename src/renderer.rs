@@ -10,6 +10,7 @@ const OUTPUT_FPS: f64 = 60.0;
 pub struct RenderConfig {
     pub nvidia: bool,
     pub cq: u8,
+    pub overlay_only: bool,
 }
 
 pub struct RenderJob {
@@ -31,13 +32,21 @@ impl RenderJob {
         let source_duration = self.total_frames as f64 / self.fps;
         let overlay_frames = (source_duration * OUTPUT_FPS).ceil() as u64;
 
-        let mut ffmpeg = spawn_ffmpeg_overlay(
-            &self.input_video,
-            &self.project.output,
-            self.video_width,
-            self.video_height,
-            &self.render_cfg,
-        )?;
+        let mut ffmpeg = if self.render_cfg.overlay_only {
+            spawn_ffmpeg_alpha(
+                &self.project.output,
+                self.video_width,
+                self.video_height,
+            )?
+        } else {
+            spawn_ffmpeg_overlay(
+                &self.input_video,
+                &self.project.output,
+                self.video_width,
+                self.video_height,
+                &self.render_cfg,
+            )?
+        };
 
         let stdin = ffmpeg.stdin.as_mut().context("no ffmpeg stdin")?;
 
@@ -215,6 +224,31 @@ fn draw_frame(
     }
 
     pixmap.take_demultiplied()
+}
+
+fn spawn_ffmpeg_alpha(output: &str, w: u32, h: u32) -> Result<Child> {
+    let fps_str = format!("{OUTPUT_FPS}");
+    let size_str = format!("{w}x{h}");
+
+    let child = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f", "rawvideo",
+            "-pix_fmt", "rgba",
+            "-s", &size_str,
+            "-r", &fps_str,
+            "-i", "pipe:0",
+            "-c:v", "prores_ks",
+            "-profile:v", "4444",
+            "-pix_fmt", "yuva444p10le",
+            output,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("failed to spawn ffmpeg")?;
+    Ok(child)
 }
 
 fn spawn_ffmpeg_overlay(
