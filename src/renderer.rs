@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
 use tiny_skia::*;
@@ -55,23 +56,63 @@ impl RenderJob {
         let half_h = bar.bar_height / 2.0;
         let end_x_px = bar.end_circle_x * self.video_width as f32;
 
-        for frame_idx in 0..overlay_frames {
-            let t = frame_idx as f64 / OUTPUT_FPS;
-            let pixels = draw_frame(
-                self.video_width,
-                self.video_height,
-                t,
-                bar_y_px,
-                half_h,
-                end_x_px,
-                &self.project,
-            );
-            stdin.write_all(&pixels)?;
+        // Render frames in parallel batches. Each batch is rendered across all CPU
+        // cores simultaneously, then written in order to the ffmpeg pipe. The next
+        // batch renders while ffmpeg encodes the previous one.
+        const BATCH: usize = 32;
+        let w = self.video_width;
+        let h = self.video_height;
+        let overlay_only = self.render_cfg.overlay_only;
+
+        for batch_start in (0..overlay_frames as usize).step_by(BATCH) {
+            let batch_end = (batch_start + BATCH).min(overlay_frames as usize);
+            let batch: Vec<Vec<u8>> = (batch_start..batch_end)
+                .into_par_iter()
+                .map(|frame_idx| {
+                    let t = frame_idx as f64 / OUTPUT_FPS;
+                    let mut pixels = draw_frame(w, h, t, bar_y_px, half_h, end_x_px, &self.project);
+                    if overlay_only {
+                        dither_frame(&mut pixels, w, frame_idx as u64);
+                    }
+                    pixels
+                })
+                .collect();
+            for pixels in batch {
+                stdin.write_all(&pixels)?;
+            }
         }
 
         drop(ffmpeg.stdin.take());
         ffmpeg.wait()?;
         Ok(())
+    }
+}
+
+// 4×4 Bayer ordered dither matrix (values 0–15).
+// Applied with per-frame rotation for temporal averaging across ~16 frames,
+// converting gradient banding into imperceptible noise.
+const BAYER4: [[i32; 4]; 4] = [
+    [ 0,  8,  2, 10],
+    [12,  4, 14,  6],
+    [ 3, 11,  1,  9],
+    [15,  7, 13,  5],
+];
+
+fn dither_frame(pixels: &mut [u8], w: u32, frame_idx: u64) {
+    for (idx, chunk) in pixels.chunks_exact_mut(4).enumerate() {
+        // Skip fully transparent pixels — dithering them creates ghost alpha values
+        // that Kdenlive's compositor reads as semi-visible pixels, causing edge artifacts.
+        if chunk[3] == 0 { continue; }
+        let x = (idx % w as usize) % 4;
+        let y = (idx / w as usize) % 4;
+        // Rotate pattern by frame so each pixel alternates +0/+1 over 16 frames
+        let threshold = (BAYER4[y][x] + frame_idx as i32) % 16;
+        if threshold >= 8 {
+            // Only dither RGB — alpha noise corrupts compositor blending in Kdenlive
+            chunk[0] = chunk[0].saturating_add(1);
+            chunk[1] = chunk[1].saturating_add(1);
+            chunk[2] = chunk[2].saturating_add(1);
+        }
     }
 }
 
@@ -119,7 +160,7 @@ fn draw_frame(
     if fx.hit_glow {
         let max_glow = project.dots.iter()
             .filter_map(|dot| {
-                let age = t - (project.beat32_to_secs(dot.beat_32) + fx.beat_offset);
+                let age = t - project.beat32_to_secs(dot.beat_32);
                 if age >= 0.0 && age < fx.hit_glow_dur {
                     Some((1.0 - age / fx.hit_glow_dur) as f32)
                 } else {
@@ -163,12 +204,35 @@ fn draw_frame(
         }
     }
 
+    // Echo rings — expand outward from the end circle at hit time, drawn behind the shrinking dot
+    if fx.echo_ring {
+        for dot in &project.dots {
+            let hit_time = project.beat32_to_secs(dot.beat_32);
+            let post_effect = t - hit_time;
+            if post_effect < 0.0 || post_effect >= fx.echo_ring_dur { continue; }
+            let p = (post_effect / fx.echo_ring_dur) as f32;
+            let ring_r = bar.dot_radius * (1.0 + 3.5 * p);
+            let ring_w = (bar.dot_radius * 0.35 * (1.0 - p)).max(1.0);
+            let dc = dot.color.as_ref().unwrap_or(&bar.dot_color);
+            let (r, g, b) = (dc.r as f32 / 255.0, dc.g as f32 / 255.0, dc.b as f32 / 255.0);
+            let alpha = (dc.a as f32 / 255.0) * (1.0 - p) * 0.85;
+            let mut pb = PathBuilder::new();
+            pb.push_circle(end_x, bar_y, ring_r);
+            if let Some(path) = pb.finish() {
+                let mut paint = Paint::default();
+                paint.set_color(Color::from_rgba(r, g, b, alpha).unwrap_or(Color::TRANSPARENT));
+                paint.anti_alias = true;
+                let stroke = Stroke { width: ring_w, ..Default::default() };
+                pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+            }
+        }
+    }
+
     // Dots
     for dot in &project.dots {
         let hit_time = project.beat32_to_secs(dot.beat_32);
-        let effect_start = hit_time + fx.beat_offset;
         let start_time = hit_time - travel;
-        let post_effect = t - effect_start;
+        let post_effect = t - hit_time;
 
         let in_shrink = fx.dot_shrink && post_effect >= 0.0 && post_effect < fx.shrink_dur;
         let in_brief  = !fx.dot_shrink && t >= hit_time && t < hit_time + 0.1;
@@ -194,7 +258,7 @@ fn draw_frame(
         };
         let n = if bar.direction == Direction::BothDirections { 2 } else { 1 };
 
-        let dc = &bar.dot_color;
+        let dc = dot.color.as_ref().unwrap_or(&bar.dot_color);
         let (r, g, b) = (dc.r as f32 / 255.0, dc.g as f32 / 255.0, dc.b as f32 / 255.0);
         let base_a = dc.a as f32 / 255.0;
 
@@ -216,10 +280,16 @@ fn draw_frame(
                 }
             }
 
-            let mut paint = Paint::default();
-            paint.set_color(bar.dot_color.to_skia());
-            paint.anti_alias = true;
-            fill_circle(&mut pixmap, dot_x, bar_y, dot_r, &paint);
+            let core_stops = vec![
+                GradientStop::new(0.0, Color::from_rgba(r, g, b, base_a).unwrap_or(Color::TRANSPARENT)),
+                GradientStop::new(1.0, Color::from_rgba(r * 0.2, g * 0.2, b * 0.2, base_a).unwrap_or(Color::TRANSPARENT)),
+            ];
+            if let Some(shader) = radial_gradient(dot_x, bar_y, 0.0, dot_r, core_stops) {
+                let mut paint = Paint::default();
+                paint.shader = shader;
+                paint.anti_alias = true;
+                fill_circle(&mut pixmap, dot_x, bar_y, dot_r, &paint);
+            }
         }
     }
 

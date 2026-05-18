@@ -98,8 +98,16 @@ async fn render(
         overlay_only: req.overlay_only.unwrap_or(false),
     };
 
+    let overlay_width = state.cfg.render.overlay_width;
+    let overlay_height = state.cfg.render.overlay_height;
+
     tokio::task::spawn_blocking(move || -> Result<()> {
-        let (w, h, fps, frames) = renderer::probe_video(&video_path)?;
+        let (probed_w, probed_h, fps, frames) = renderer::probe_video(&video_path)?;
+        let (w, h) = if render_cfg.overlay_only {
+            (overlay_width, overlay_height)
+        } else {
+            (probed_w, probed_h)
+        };
         let job = renderer::RenderJob {
             input_video: video_path,
             project,

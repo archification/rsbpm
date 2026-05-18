@@ -118,7 +118,7 @@
       <div class="row"><label><input type="checkbox" id="fx-hitglow" checked> Hit Glow</label><input type="range" id="fx-hitglow-dur" min="0.05" max="0.6" step="0.01" value="0.25" title="Glow duration (s)"><span class="fx-val" id="fx-hitglow-val">.25s</span></div>
       <div class="row"><label><input type="checkbox" id="fx-shrink" checked> Shrink</label><input type="range" id="fx-shrink-dur" min="0.03" max="0.3" step="0.01" value="0.12" title="Shrink duration (s)"><span class="fx-val" id="fx-shrink-val">.12s</span></div>
       <div class="row"><label><input type="checkbox" id="fx-dotglow" checked> Dot Glow</label><input type="range" id="fx-dotglow-int" min="0" max="1" step="0.05" value="0.7" title="Glow intensity"><span class="fx-val" id="fx-dotglow-val">0.70</span></div>
-      <div class="row"><label>Hit offset</label><input type="range" id="fx-offset" min="-0.1" max="0.1" step="0.005" value="0" title="Shift when hit effects trigger (s)"><span class="fx-val" id="fx-offset-val">+0.00s</span></div>
+      <div class="row"><label><input type="checkbox" id="fx-echoring"> Echo Ring</label><input type="range" id="fx-echoring-dur" min="0.1" max="1.0" step="0.01" value="0.4" title="Ring duration (s)"><span class="fx-val" id="fx-echoring-val">.40s</span></div>
     </div>
 
     <div class="section">
@@ -128,6 +128,9 @@
       <div id="bc-normal-bpm-row" class="row" style="display:none;margin-top:6px">
         <label>New BPM</label>
         <input type="number" id="bc-normal-bpm" value="120" min="1" max="999" step="0.01" style="width:70px">
+      </div>
+      <div id="bc-downbeat-row" style="display:none;margin-top:4px">
+        <button id="bc-downbeat-btn" style="width:100%" title="Place a normal beat change at the current playhead, resetting the downbeat phase">↓ Downbeat Here</button>
       </div>
     </div>
 
@@ -152,7 +155,7 @@
 // ─── State ────────────────────────────────────────────────────────────────────
 const state = {
   bpm: 120,
-  dots: new Set(),        // Set of beat_32 indices
+  dots: new Map(),        // Map<beat_32, color> — color captured at placement time
   videoPath: null,        // server-side path after upload
   direction: 'bothdirections',
   barY: 0.98,
@@ -171,7 +174,7 @@ const state = {
     hitGlow: true,  hitGlowDur: 0.25,
     dotShrink: true, shrinkDur: 0.12,
     dotGlow: true,  dotGlowInt: 0.7,
-    beatOffset: 0.0,
+    echoRing: false, echoRingDur: 0.4,
   },
 };
 
@@ -239,6 +242,8 @@ let selectedBeatChangeType = null;
         document.getElementById('bc-btn-' + t.type).classList.toggle('active', selectedBeatChangeType === t.type);
       document.getElementById('bc-normal-bpm-row').style.display =
         selectedBeatChangeType === 'normal' ? '' : 'none';
+      document.getElementById('bc-downbeat-row').style.display =
+        selectedBeatChangeType === 'normal' ? '' : 'none';
     });
     el.appendChild(btn);
   }
@@ -298,7 +303,8 @@ bindFxCheck('fx-shrink', 'dotShrink');
 bindFxSlider('fx-shrink-dur', 'fx-shrink-val', 'shrinkDur', v => v.toFixed(2) + 's');
 bindFxCheck('fx-dotglow', 'dotGlow');
 bindFxSlider('fx-dotglow-int', 'fx-dotglow-val', 'dotGlowInt', v => v.toFixed(2));
-bindFxSlider('fx-offset', 'fx-offset-val', 'beatOffset', v => (v >= 0 ? '+' : '') + v.toFixed(3) + 's');
+bindFxCheck('fx-echoring', 'echoRing');
+bindFxSlider('fx-echoring-dur', 'fx-echoring-val', 'echoRingDur', v => v.toFixed(2) + 's');
 
 document.getElementById('bpm').addEventListener('input', e => {
   state.bpm = parseFloat(e.target.value) || 120;
@@ -443,14 +449,14 @@ function currentVideoTime() {
 let rafId = null;
 let _lastSeenCurrentTime = -1;
 
-function animLoop() {
-  // Re-anchor whenever the browser advances currentTime (video frame rate),
-  // not just when timeupdate fires (~4 Hz). Prevents the extrapolation from
-  // running ahead and then snapping back when timeupdate corrects it.
+function animLoop(rafTime) {
+  // Re-anchor whenever the browser advances currentTime (video frame rate).
+  // Only animLoop touches _smoothT/_smoothRef during playback — timeupdate
+  // must not reset the anchor or it causes mid-interpolation snapbacks.
   const ct = videoEl.currentTime;
   if (ct !== _lastSeenCurrentTime) {
     _smoothT = ct;
-    _smoothRef = performance.now();
+    _smoothRef = rafTime;
     _lastSeenCurrentTime = ct;
   }
   document.getElementById('time-display').textContent = currentVideoTime().toFixed(2);
@@ -476,11 +482,11 @@ videoEl.addEventListener('ended', () => {
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
 });
 
-// Update the extrapolation anchor each time the browser advances currentTime
+// Redraw on seek while paused. During playback animLoop owns all anchoring.
 videoEl.addEventListener('timeupdate', () => {
-  _smoothT = videoEl.currentTime;
-  _smoothRef = performance.now();
   if (videoEl.paused) {
+    _smoothT = videoEl.currentTime;
+    _smoothRef = performance.now();
     document.getElementById('time-display').textContent = videoEl.currentTime.toFixed(2);
     drawOverlay();
     updatePlayhead();
@@ -500,6 +506,24 @@ function resizeOverlay() {
 function cssColor(c, alpha) {
   const a = alpha !== undefined ? alpha : c.a / 255;
   return `rgba(${c.r},${c.g},${c.b},${a})`;
+}
+
+function secsTobeat32(t) {
+  const tempo = [{ beat_32: 0, bpm: state.bpm }];
+  for (const bc of [...state.beatChanges].sort((a, b) => a.beat_32 - b.beat_32)) {
+    if (bc.type === 'normal' && bc.bpm != null) {
+      if (bc.beat_32 === 0) { tempo[0].bpm = bc.bpm; }
+      else { tempo.push({ beat_32: bc.beat_32, bpm: bc.bpm }); }
+    }
+  }
+  let secs = 0, i = 0;
+  while (i + 1 < tempo.length) {
+    const segDur = (tempo[i + 1].beat_32 - tempo[i].beat_32) / 8.0 * 60.0 / tempo[i].bpm;
+    if (secs + segDur >= t) break;
+    secs += segDur;
+    i++;
+  }
+  return tempo[i].beat_32 + (t - secs) * 8.0 * tempo[i].bpm / 60.0;
 }
 
 function beat32ToSecs(b32) {
@@ -539,8 +563,8 @@ function drawOverlay() {
   // ── Hit glow behind end circle ───────────────────────────────────────────
   if (fx.hitGlow) {
     let maxGlow = 0;
-    for (const b32 of state.dots) {
-      const age = t - (beat32ToSecs(b32) + fx.beatOffset);
+    for (const b32 of state.dots.keys()) {
+      const age = t - beat32ToSecs(b32);
       if (age >= 0 && age < fx.hitGlowDur) {
         const v = 1 - age / fx.hitGlowDur;
         if (v > maxGlow) maxGlow = v;
@@ -569,12 +593,29 @@ function drawOverlay() {
   overlayCtx.lineWidth = ringWidth;
   overlayCtx.stroke();
 
+  // ── Echo rings ───────────────────────────────────────────────────────────
+  if (fx.echoRing) {
+    for (const [b32, dc] of state.dots) {
+      const hitTime = beat32ToSecs(b32);
+      const postEffect = t - hitTime;
+      if (postEffect < 0 || postEffect >= fx.echoRingDur) continue;
+      const p = postEffect / fx.echoRingDur;
+      const ringR = state.dotRadius * (1 + 3.5 * p);
+      const ringW = Math.max(1, state.dotRadius * 0.35 * (1 - p));
+      const alpha = (dc.a / 255) * (1 - p) * 0.85;
+      overlayCtx.beginPath();
+      overlayCtx.arc(endX, barY, ringR, 0, Math.PI * 2);
+      overlayCtx.strokeStyle = `rgba(${dc.r},${dc.g},${dc.b},${alpha.toFixed(3)})`;
+      overlayCtx.lineWidth = ringW;
+      overlayCtx.stroke();
+    }
+  }
+
   // ── Dots ─────────────────────────────────────────────────────────────────
-  for (const b32 of state.dots) {
+  for (const [b32, dc] of state.dots) {
     const hitTime = beat32ToSecs(b32);
-    const effectStart = hitTime + fx.beatOffset;
     const startTime = hitTime - travel;
-    const postEffect = t - effectStart;
+    const postEffect = t - hitTime;
     const inShrink = fx.dotShrink && postEffect >= 0 && postEffect < fx.shrinkDur;
     const inBrief  = !fx.dotShrink && t >= hitTime && t < hitTime + 0.1;
     const inTravel = t >= startTime && !inShrink && t < hitTime;
@@ -600,7 +641,6 @@ function drawOverlay() {
     for (const dotX of dotXs) {
       if (fx.dotGlow) {
         const glowR = dotR * (1 + fx.dotGlowInt * 2.5);
-        const dc = state.dotColor;
         const baseA = dc.a / 255;
         const grad = overlayCtx.createRadialGradient(dotX, barY, 0, dotX, barY, glowR);
         grad.addColorStop(0,            `rgba(${dc.r},${dc.g},${dc.b},${baseA.toFixed(3)})`);
@@ -610,15 +650,21 @@ function drawOverlay() {
         overlayCtx.arc(dotX, barY, glowR, 0, Math.PI * 2);
         overlayCtx.fillStyle = grad;
         overlayCtx.fill();
-        // solid core on top of the glow
+        // solid core on top of the glow, darkened at the rim for contrast
+        const coreGrad = overlayCtx.createRadialGradient(dotX, barY, 0, dotX, barY, dotR);
+        coreGrad.addColorStop(0, cssColor(dc));
+        coreGrad.addColorStop(1, `rgba(${dc.r*.2|0},${dc.g*.2|0},${dc.b*.2|0},${dc.a/255})`);
         overlayCtx.beginPath();
         overlayCtx.arc(dotX, barY, dotR, 0, Math.PI * 2);
-        overlayCtx.fillStyle = cssColor(state.dotColor);
+        overlayCtx.fillStyle = coreGrad;
         overlayCtx.fill();
       } else {
-        overlayCtx.fillStyle = cssColor(state.dotColor);
+        const coreGrad = overlayCtx.createRadialGradient(dotX, barY, 0, dotX, barY, dotR);
+        coreGrad.addColorStop(0, cssColor(dc));
+        coreGrad.addColorStop(1, `rgba(${dc.r*.2|0},${dc.g*.2|0},${dc.b*.2|0},${dc.a/255})`);
         overlayCtx.beginPath();
         overlayCtx.arc(dotX, barY, dotR, 0, Math.PI * 2);
+        overlayCtx.fillStyle = coreGrad;
         overlayCtx.fill();
       }
     }
@@ -655,7 +701,7 @@ function buildTimeline() {
   const beatsPerSec = state.bpm / 60.0;
   totalBeat32 = Math.ceil(dur * beatsPerSec * 8) + 8;
   // Never shrink below what's needed to show all placed dots
-  for (const b of state.dots) if (b + 8 > totalBeat32) totalBeat32 = b + 8;
+  for (const b of state.dots.keys()) if (b + 8 > totalBeat32) totalBeat32 = b + 8;
   // Canvas width above ~32767px causes the browser backing store to silently fail.
   // Instead of reducing pxPer32, we keep user zoom and use a virtual canvas that
   // slides within a full-width inner div, redrawing on scroll.
@@ -686,8 +732,8 @@ function drawTimeline() {
   tlCtx.fillStyle = '#0d0d0d';
   tlCtx.fillRect(off, 0, w, THUMB_H);
   for (const {time, bitmap, interval} of thumbnailBitmaps) {
-    const x = time * pxPerSec;
-    const tw = interval * pxPerSec;
+    const x = secsTobeat32(time) * pxPer32;
+    const tw = (secsTobeat32(time + interval) - secsTobeat32(time)) * pxPer32;
     if (x > off + w || x + tw < off) continue;
     tlCtx.drawImage(bitmap, x, 0, tw, THUMB_H);
   }
@@ -702,7 +748,7 @@ function drawTimeline() {
     tlCtx.lineWidth = 1;
     tlCtx.beginPath();
     for (let px = off; px < off + w; px++) {
-      const si = Math.floor(px / pxPerSec * WAVE_SPS);
+      const si = Math.floor(beat32ToSecs(px / pxPer32) * WAVE_SPS);
       const amp = (waveformData.samples[si] || 0) * half;
       tlCtx.moveTo(px + 0.5, midY - amp);
       tlCtx.lineTo(px + 0.5, midY + amp);
@@ -767,25 +813,30 @@ function drawTimeline() {
           tlCtx.beginPath(); tlCtx.moveTo(x, dotY); tlCtx.lineTo(x, TL_H); tlCtx.stroke();
         }
       } else {
-        // Skip ahead to the first slot visible on the canvas
-        const iStart = Math.max(Math.floor(start), Math.floor(off / pxPer32));
-        for (let i = iStart; i < end; i++) {
-          const x = i * pxPer32;
-          if (x > off + w) break;
-          if      (i % 32 === 0) { tlCtx.strokeStyle = '#888';    tlCtx.lineWidth = 1.5; }
-          else if (i %  8 === 0) { tlCtx.strokeStyle = '#555';    tlCtx.lineWidth = 1;   }
-          else if (i %  4 === 0) { tlCtx.strokeStyle = '#3a3a3a'; tlCtx.lineWidth = 0.5; }
-          else                   { tlCtx.strokeStyle = '#2d2d2d'; tlCtx.lineWidth = 0.5; }
-          tlCtx.beginPath(); tlCtx.moveTo(x, dotY); tlCtx.lineTo(x, TL_H); tlCtx.stroke();
+        // Draw finest lines first, coarsest last so bar/beat lines overwrite subdivisions.
+        // All positions are relative to `start` so a fractional downbeat shifts the grid.
+        for (const [step, style, lw] of [
+          [1, '#2d2d2d', 0.5], [4, '#3a3a3a', 0.5], [8, '#555', 1], [32, '#888', 1.5],
+        ]) {
+          const firstN = Math.max(0, Math.ceil((off / pxPer32 - start) / step));
+          tlCtx.strokeStyle = style; tlCtx.lineWidth = lw; tlCtx.beginPath();
+          for (let n = firstN; ; n++) {
+            const pos = start + n * step;
+            if (pos >= end) break;
+            const x = pos * pxPer32;
+            if (x > off + w) break;
+            tlCtx.moveTo(x, dotY); tlCtx.lineTo(x, TL_H);
+          }
+          tlCtx.stroke();
         }
       }
     }
   }
 
-  tlCtx.fillStyle = cssColor(state.dotColor);
-  for (const b32 of state.dots) {
+  for (const [b32, dc] of state.dots) {
     const x = b32 * pxPer32 + pxPer32 / 2;
     if (x < off || x > off + w) continue;
+    tlCtx.fillStyle = cssColor(dc);
     tlCtx.beginPath();
     tlCtx.arc(x, dotY + DOT_H / 2, 5, 0, Math.PI * 2);
     tlCtx.fill();
@@ -814,7 +865,7 @@ function drawTimeline() {
 
   // ── Playhead ─────────────────────────────────────────────────────────────
   if (videoEl.duration) {
-    const px = currentVideoTime() * pxPerSec;
+    const px = secsTobeat32(currentVideoTime()) * pxPer32;
     tlCtx.strokeStyle = '#ff4444';
     tlCtx.lineWidth = 2;
     tlCtx.beginPath();
@@ -827,17 +878,17 @@ function drawTimeline() {
 }
 
 function updatePlayhead() {
-  drawTimeline();
   const scroll = document.getElementById('timeline-scroll');
-  const pxPerSec = pxPer32 * state.bpm / 60 * 8;
-  const px = currentVideoTime() * pxPerSec;
+  const px = secsTobeat32(currentVideoTime()) * pxPer32;
   if (px < scroll.scrollLeft || px > scroll.scrollLeft + scroll.clientWidth - 60) {
     scroll.scrollLeft = px - scroll.clientWidth / 2;
   }
+  drawTimeline();
 }
 
 // Snaps a pixel x offset to the appropriate beat_32 position based on section type.
-// Returns a float for triplet sections, integer otherwise.
+// For sections with a fractional start (downbeat marker), snaps relative to that start
+// so dots stay aligned to the section's beat grid.
 function snapB32(offsetX) {
   const rawB32 = offsetX / pxPer32;
   const bcs = [...state.beatChanges].sort((a, b) => a.beat_32 - b.beat_32);
@@ -851,16 +902,21 @@ function snapB32(offsetX) {
     const n = Math.round((rawB32 - secStart) / TRIP);
     return secStart + n * TRIP;
   }
-  return Math.floor(rawB32);
+  return secStart + Math.floor(rawB32 - secStart);
 }
+
+document.getElementById('bc-downbeat-btn').addEventListener('click', () => {
+  const b32 = secsTobeat32(videoEl.currentTime);
+  const bpm = parseFloat(document.getElementById('bc-normal-bpm').value) || state.bpm;
+  placeBeatChange(b32, 'normal', bpm);
+});
 
 // Timeline click/drag to add or remove dots
 let tlDragging = false;
 let tlAddMode = true;
 
 function tlSeek(offsetX) {
-  const pxPerSec = pxPer32 * state.bpm / 60 * 8;
-  videoEl.currentTime = offsetX / pxPerSec;
+  videoEl.currentTime = beat32ToSecs(offsetX / pxPer32);
 }
 
 function placeBeatChange(b32, type, bpm) {
@@ -870,6 +926,13 @@ function placeBeatChange(b32, type, bpm) {
   if (type === 'normal' && bpm != null) entry.bpm = bpm;
   state.beatChanges.push(entry);
   state.beatChanges.sort((a, b) => a.beat_32 - b.beat_32);
+  // Clear dots in the section that now starts at b32, up to the next beat change.
+  // Dots placed under a different grid are unreachable by clicking so must be purged.
+  const next = state.beatChanges.find(bc => bc.beat_32 > b32);
+  const clearEnd = next ? next.beat_32 : Infinity;
+  for (const b of state.dots.keys()) {
+    if (b >= b32 && b < clearEnd) state.dots.delete(b);
+  }
   drawTimeline();
   drawOverlay();
 }
@@ -901,8 +964,8 @@ tlCanvas.addEventListener('contextmenu', e => {
   e.preventDefault();
   const tlX = e.offsetX + canvasOffsetPx;
   if (e.offsetY >= THUMB_H + WAVE_H) {
-    const b32 = Math.floor(tlX / pxPer32);
-    const idx = state.beatChanges.findIndex(bc => bc.beat_32 === b32);
+    const rawB32 = tlX / pxPer32;
+    const idx = state.beatChanges.findIndex(bc => Math.abs(bc.beat_32 - rawB32) < 0.5);
     if (idx >= 0) { state.beatChanges.splice(idx, 1); drawTimeline(); return; }
   }
   tlSeek(tlX);
@@ -953,7 +1016,7 @@ document.getElementById('timeline-scroll').addEventListener('scroll', () => {
 
 function toggleDot(b32, add) {
   if (b32 < 0 || b32 >= totalBeat32) return;
-  if (add) state.dots.add(b32);
+  if (add) state.dots.set(b32, { ...state.dotColor });
   else state.dots.delete(b32);
   drawTimeline();
   drawOverlay();
@@ -982,12 +1045,12 @@ document.getElementById('fill-beats-btn').addEventListener('click', () => {
       for (let n = 0; ; n++) {
         const pos = start + n * 2 * TRIP;
         if (pos >= end) break;
-        state.dots.add(pos);
+        state.dots.set(pos, { ...state.dotColor });
       }
     } else {
       const step = STEPS[type];
       if (step === null) continue;
-      for (let i = start; i < end; i += step) state.dots.add(i);
+      for (let i = start; i < end; i += step) state.dots.set(i, { ...state.dotColor });
     }
   }
   drawTimeline();
@@ -1044,7 +1107,7 @@ function buildProject() {
       dot_travel_seconds: state.dotTravel,
     },
     fx: { ...state.fx },
-    dots: [...state.dots].sort((a, b) => a - b).map(b => ({ beat_32: b })),
+    dots: [...state.dots.keys()].sort((a, b) => a - b).map(b32 => ({ beat_32: b32, color: state.dots.get(b32) })),
     beat_changes: state.beatChanges.map(bc => {
       const entry = { beat_32: bc.beat_32, type: bc.type };
       if (bc.type === 'normal' && bc.bpm != null) entry.bpm = bc.bpm;
@@ -1097,11 +1160,12 @@ function applyProject(p) {
     document.getElementById('fx-dotglow').checked = f.dotGlow;
     document.getElementById('fx-dotglow-int').value = f.dotGlowInt;
     document.getElementById('fx-dotglow-val').textContent = f.dotGlowInt.toFixed(2);
-    document.getElementById('fx-offset').value = f.beatOffset;
-    document.getElementById('fx-offset-val').textContent = (f.beatOffset >= 0 ? '+' : '') + f.beatOffset.toFixed(3) + 's';
+    document.getElementById('fx-echoring').checked = f.echoRing ?? false;
+    document.getElementById('fx-echoring-dur').value = f.echoRingDur ?? 0.4;
+    document.getElementById('fx-echoring-val').textContent = (f.echoRingDur ?? 0.4).toFixed(2) + 's';
   }
   state.dots.clear();
-  (p.dots ?? []).forEach(d => state.dots.add(d.beat_32));
+  (p.dots ?? []).forEach(d => state.dots.set(d.beat_32, d.color ?? { ...state.dotColor }));
   state.beatChanges = (p.beat_changes ?? []).map(bc => {
     const entry = { beat_32: bc.beat_32, type: bc.type };
     if (bc.type === 'normal' && bc.bpm != null) entry.bpm = bc.bpm;
@@ -1155,11 +1219,12 @@ document.getElementById('id-song-btn').addEventListener('click', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ video_path: state.videoPath, timestamp: videoEl.currentTime }),
     });
-    const data = await res.json();
     if (!res.ok) {
-      setStatus('ID failed: ' + (data.message || res.statusText));
+      const msg = await res.text().catch(() => res.statusText);
+      setStatus('ID failed: ' + msg);
       return;
     }
+    const data = await res.json();
     if (data.result) {
       setStatus(`${data.result.artist} — ${data.result.title}`);
     } else {

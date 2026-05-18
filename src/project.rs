@@ -65,6 +65,9 @@ impl Default for BarConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DotEvent {
     pub beat_32: f64,
+    /// Per-dot color override; falls back to `bar.dot_color` when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<Color>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -79,7 +82,7 @@ pub enum BeatChangeType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BeatChange {
-    pub beat_32: u32,
+    pub beat_32: f64,
     #[serde(rename = "type")]
     pub change_type: BeatChangeType,
     /// Only meaningful when change_type == Normal; sets BPM from this point forward.
@@ -105,8 +108,10 @@ pub struct Fx {
     pub dot_glow: bool,
     #[serde(rename = "dotGlowInt", default = "default_dot_glow_int")]
     pub dot_glow_int: f32,
-    #[serde(rename = "beatOffset", default)]
-    pub beat_offset: f64,
+    #[serde(rename = "echoRing", default)]
+    pub echo_ring: bool,
+    #[serde(rename = "echoRingDur", default = "default_echo_ring_dur")]
+    pub echo_ring_dur: f64,
 }
 
 fn default_true() -> bool { true }
@@ -114,6 +119,7 @@ fn default_speed_power() -> f32 { 2.5 }
 fn default_hit_glow_dur() -> f64 { 0.25 }
 fn default_shrink_dur() -> f64 { 0.12 }
 fn default_dot_glow_int() -> f32 { 0.7 }
+fn default_echo_ring_dur() -> f64 { 0.4 }
 
 impl Default for Fx {
     fn default() -> Self {
@@ -126,7 +132,8 @@ impl Default for Fx {
             shrink_dur: 0.12,
             dot_glow: true,
             dot_glow_int: 0.7,
-            beat_offset: 0.0,
+            echo_ring: false,
+            echo_ring_dur: 0.4,
         }
     }
 }
@@ -150,11 +157,11 @@ impl Project {
     pub fn beat32_to_secs(&self, beat_32: f64) -> f64 {
         let mut tempo: Vec<(f64, f64)> = vec![(0.0, self.bpm)];
         let mut changes = self.beat_changes.clone();
-        changes.sort_by(|a, b| a.beat_32.cmp(&b.beat_32));
+        changes.sort_by(|a, b| a.beat_32.total_cmp(&b.beat_32));
         for bc in &changes {
             if bc.change_type == BeatChangeType::Normal {
                 if let Some(bpm) = bc.bpm {
-                    let b = bc.beat_32 as f64;
+                    let b = bc.beat_32;
                     if b == 0.0 { tempo[0].1 = bpm; } else { tempo.push((b, bpm)); }
                 }
             }

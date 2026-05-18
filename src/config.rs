@@ -25,6 +25,10 @@ pub struct RenderConfig {
     pub nvidia: bool,
     #[serde(default = "default_cq")]
     pub cq: u8,
+    #[serde(default = "default_overlay_width")]
+    pub overlay_width: u32,
+    #[serde(default = "default_overlay_height")]
+    pub overlay_height: u32,
 }
 
 impl Default for ServerConfig {
@@ -42,6 +46,8 @@ impl Default for RenderConfig {
         Self {
             nvidia: true,
             cq: default_cq(),
+            overlay_width: default_overlay_width(),
+            overlay_height: default_overlay_height(),
         }
     }
 }
@@ -50,6 +56,8 @@ fn default_bind() -> String { "127.0.0.1:7979".to_string() }
 fn default_uploads_dir() -> String { "uploads".to_string() }
 fn default_true() -> bool { true }
 fn default_cq() -> u8 { 18 }
+fn default_overlay_width() -> u32 { 1920 }
+fn default_overlay_height() -> u32 { 1080 }
 
 const DEFAULT_CONFIG: &str = r#"[server]
 # Address and port the editor web UI is served on
@@ -65,6 +73,10 @@ nvidia = true
 # Encode quality: lower = better quality, larger file. 18 is a good default.
 # Maps to -cq for nvenc, -crf for libx264.
 cq = 18
+# Resolution used when rendering with "Overlay only" checked.
+# Set this to match the final destination video (e.g. 1920x1080 for 1080p).
+overlay_width = 1920
+overlay_height = 1080
 "#;
 
 pub fn load() -> Result<Config> {
